@@ -632,8 +632,6 @@ function select_action(
     bmap_lat = model.discretizers[findfirst(model.BN.names, symbol_lat)]
     bmap_lon = model.discretizers[findfirst(model.BN.names, symbol_lon)]
 
-    logindexbase = calc_logindexbase(carind)
-
     observations = Features.observe(basics, carind, validfind, behavior.indicators)
     assignment = encode(model, observations)
     assignment, logPs = sample_and_logP!(model, assignment)
