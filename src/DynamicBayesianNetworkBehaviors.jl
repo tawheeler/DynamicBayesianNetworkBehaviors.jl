@@ -7,7 +7,7 @@ using BayesNets
 
 import Graphs: topological_sort_by_dfs, in_neighbors, num_vertices, num_edges
 import Discretizers: encode
-import AutomotiveDrivingModels: ModelTargets, AbstractVehicleBehavior, select_action, calc_action_loglikelihood, 
+import AutomotiveDrivingModels: ModelTargets, AbstractVehicleBehavior, select_action, calc_action_loglikelihood,
                                 train, observe, _reverse_smoothing_sequential_moving_average
 import SmileExtra: log_bayes_score_component, statistics
 
@@ -85,7 +85,7 @@ immutable DBNModel
     istarget      :: BitVector # whether a feature is a target feature
 end
 
-function dbnmodel{R<:Real, D<:AbstractDiscretizer, F<:AbstractFeature, G<:AbstractFeature}( 
+function dbnmodel{R<:Real, D<:AbstractDiscretizer, F<:AbstractFeature, G<:AbstractFeature}(
     BN:: BayesNet,
     statsvec::Vector{Matrix{R}},
     discretizerdict::Dict{Symbol, D},
@@ -107,7 +107,7 @@ function dbnmodel{R<:Real, D<:AbstractDiscretizer, F<:AbstractFeature, G<:Abstra
     statsvec_float = convert(Vector{Matrix{Float64}}, statsvec)
     DBNModel(BN, statsvec_float, features, discretizers, istarget)
 end
-function dbnmodel{R<:Real, D<:AbstractDiscretizer, F<:AbstractFeature, G<:AbstractFeature}( 
+function dbnmodel{R<:Real, D<:AbstractDiscretizer, F<:AbstractFeature, G<:AbstractFeature}(
     BN::BayesNet,
     statsvec::Vector{Matrix{R}},
     discretizers::Vector{D},
@@ -130,7 +130,7 @@ function dbnmodel{R<:Real, D<:AbstractDiscretizer, F<:AbstractFeature, G<:Abstra
 end
 function dbnmodel{R<:Real, D<:AbstractDiscretizer, F<:AbstractFeature, G<:AbstractFeature}(
     adj::BitMatrix,
-    statsvec::Vector{Matrix{R}}, 
+    statsvec::Vector{Matrix{R}},
     discretizerdict::Dict{Symbol, D},
     targets::Vector{F},
     indicators::Vector{G}
@@ -147,8 +147,8 @@ function dbnmodel(modelstats::Dict{String, Any})
     stats      = modelstats["statistics"]
     adj        = modelstats["adjacency"]
 
-    dbnmodel(adj, stats, discretizerdict, convert(Vector{AbstractFeature}, targets), 
-                        convert(Vector{AbstractFeature}, indicators))  
+    dbnmodel(adj, stats, discretizerdict, convert(Vector{AbstractFeature}, targets),
+                        convert(Vector{AbstractFeature}, indicators))
 end
 function dbnmodel(modelpstats_file::String)
     emstats = load(modelpstats_file)
@@ -293,7 +293,7 @@ function get_counts_for_assignment(
     parentassignments::Vector{Int},
     bincounts::Vector{Int}
     )
-    
+
     dims = tuple([bincounts[parentindeces]]...)
     subs = tuple(parentassignments...)
     j = sub2ind(dims, subs...)
@@ -351,7 +351,7 @@ function sample_and_logP!(
     logPs::Dict{Symbol, Float64}=Dict{Symbol, Float64}(),
     ordering::Vector{Int}=topological_sort_by_dfs(model.BN.dag)
     )
-    
+
     for name in model.BN.names[ordering]
         if !haskey(assignment, name)
             cpd = BayesNets.cpd(model.BN, name)
@@ -416,12 +416,12 @@ function calc_probability_for_uniform_sample_from_bin(
 end
 
 function export_to_text(model::DBNModel, filename::String)
-    # export a bayesian network to an encounter definition file 
+    # export a bayesian network to an encounter definition file
 
     n = model.n # the number of nodes
 
     open(filename, "w") do fout
-        
+
         # Labels: the node names
         ###############################################
         println(fout, "# labels")
@@ -469,7 +469,7 @@ function export_to_text(model::DBNModel, filename::String)
         @printf(fout, "# discretizers\n")
         for i = 1 : n
             bmap = model.discretizers[i]
-            
+
             if isa(bmap, CategoricalDiscretizer)
                 @printf(fout, "*")
             elseif isa(bmap, LinearDiscretizer)
@@ -504,7 +504,7 @@ end
 function model_adjacency_matrix(
     net_ind_lat :: Int,
     net_ind_lon :: Int,
-    net_parent_indices_lat :: Vector{Int}, 
+    net_parent_indices_lat :: Vector{Int},
     net_parent_indices_lon :: Vector{Int},
     num_net_features :: Int
     )
@@ -537,7 +537,7 @@ type DBNSimParams
     end
 end
 type DynamicBayesianNetworkBehavior <: AbstractVehicleBehavior
-    
+
     model         :: DBNModel
 
     ind_lat       :: Int
@@ -560,7 +560,7 @@ type DynamicBayesianNetworkBehavior <: AbstractVehicleBehavior
         retval.model = model
 
         targets = get_targets(model)
-        
+
         f_lat = get_target_lat(model, targets)
         retval.ind_lat = indexof(f_lat, model)
         retval.symbol_lat = symbol(f_lat)
@@ -568,7 +568,7 @@ type DynamicBayesianNetworkBehavior <: AbstractVehicleBehavior
         f_lon = get_target_lon(model, targets)
         retval.ind_lon = indexof(f_lon, model)
         retval.symbol_lon = symbol(f_lon)
-        
+
 
         retval.simparams_lat = simparams_lat
         retval.simparams_lon = simparams_lon
@@ -619,7 +619,7 @@ function select_action(
     model = behavior.model
     symbol_lat = behavior.symbol_lat
     symbol_lon = behavior.symbol_lon
-    
+
     simparams_lat = behavior.simparams_lat
     simparams_lon = behavior.simparams_lon
     samplemethod_lat = simparams_lat.sampling_scheme
@@ -725,12 +725,12 @@ end
 type ParentFeatures
     lat :: Vector{AbstractFeature}
     lon :: Vector{AbstractFeature}
-end    
+end
 
 type GraphLearningResult
     fileroot     :: String
     target_lat   :: AbstractFeature
-    target_lon   :: AbstractFeature     
+    target_lon   :: AbstractFeature
     parents_lat  :: Vector{AbstractFeature}
     parents_lon  :: Vector{AbstractFeature}
     features     :: Vector{AbstractFeature}
@@ -775,7 +775,7 @@ type GraphLearningResult
         parents_lat = features[net_parent_indices_lat]
         parents_lon = features[net_parent_indices_lon]
 
-        new(basefolder, target_lat, target_lon, parents_lat, parents_lon, 
+        new(basefolder, target_lat, target_lon, parents_lat, parents_lon,
             net_features, adj, stats, bayescore)
     end
 end
@@ -804,7 +804,7 @@ end
 
 const DEFAULT_INDICATORS = [
                     YAW, SPEED, VELFX, VELFY, DELTA_SPEED_LIMIT,
-                    D_CL, D_ML, D_MR, D_MERGE, D_SPLIT, 
+                    D_CL, D_ML, D_MR, D_MERGE, D_SPLIT,
                     TIMETOCROSSING_RIGHT, TIMETOCROSSING_LEFT, TIMESINCELANECROSSING, ESTIMATEDTIMETOLANECROSSING,
                     N_LANE_L, N_LANE_R, HAS_LANE_L, HAS_LANE_R,
                     TURNRATE, TURNRATE_GLOBAL, ACC, ACCFX, ACCFY, A_REQ_STAYINLANE, LANECURVATURE,
@@ -1066,7 +1066,7 @@ function calc_bincounts_array{D<:AbstractDiscretizer}(binmaps::Vector{D})
     end
     r
 end
-function discretize{D<:AbstractDiscretizer}( 
+function discretize{D<:AbstractDiscretizer}(
     binmaps::Vector{D},
     data::Matrix{Float64}, # (nfeatures × nsamples)
     features::Vector{AbstractFeature}
@@ -1090,15 +1090,15 @@ function discretize{D<:AbstractDiscretizer}(
                 println(data[i-5:i+5,j])
                 error("Bad")
             end
-            
+
         end
     end
 
     mat
 end
-function discretize_cleaned{D<:AbstractDiscretizer, F<:AbstractFeature}( 
-    binmaps  :: Dict{Symbol, D}, 
-    features :: Vector{F}, 
+function discretize_cleaned{D<:AbstractDiscretizer, F<:AbstractFeature}(
+    binmaps  :: Dict{Symbol, D},
+    features :: Vector{F},
     data     :: DataFrame
     )
 
@@ -1129,9 +1129,9 @@ function rediscretize!(data::ModelData, modelparams::ModelParams, variable_index
     data.discrete[variable_index,:] = encode(binmap, data.continuous[variable_index,:])
     data
 end
-function drop_invalid_discretization_rows{D<:AbstractDiscretizer, F<:AbstractFeature}( 
-    binmaps  :: Dict{Symbol, D}, 
-    features :: Vector{F}, 
+function drop_invalid_discretization_rows{D<:AbstractDiscretizer, F<:AbstractFeature}(
+    binmaps  :: Dict{Symbol, D},
+    features :: Vector{F},
     data     :: DataFrame
     )
 
@@ -1149,11 +1149,11 @@ function drop_invalid_discretization_rows{D<:AbstractDiscretizer, F<:AbstractFea
             end
         end
     end
-    
+
     data[is_valid, :]
 end
-function drop_invalid_discretization_rows{D<:AbstractDiscretizer, F<:AbstractFeature}( 
-    binmaps  :: Dict{Symbol, D}, 
+function drop_invalid_discretization_rows{D<:AbstractDiscretizer, F<:AbstractFeature}(
+    binmaps  :: Dict{Symbol, D},
     features :: Vector{F},
     target_indeces :: Vector{Int}, # these cannot be Inf
     data     :: DataFrame
@@ -1167,16 +1167,16 @@ function drop_invalid_discretization_rows{D<:AbstractDiscretizer, F<:AbstractFea
             sym = symbol(f)
             value = data[i, sym]::Float64
             dmap = binmaps[sym]
-            if isnan(value) || 
+            if isnan(value) ||
                (isinf(value) && in(j, target_indeces)) ||
                !supports_encoding(dmap, value)
-               
+
                 is_valid[i] = false
                 break
             end
         end
     end
-    
+
     data[is_valid, :]
 end
 function convert_dataset_to_matrix{F<:AbstractFeature}(
@@ -1232,9 +1232,9 @@ function _find_index_mapping{T}(original::Vector{T}, target::Vector{T})
     retval
 end
 function feature_indeces_in_net(
-    find_lat::Int, 
-    find_lon::Int, 
-    parents_lat::Vector{Int}, 
+    find_lat::Int,
+    find_lon::Int,
+    parents_lat::Vector{Int},
     parents_lon::Vector{Int}
     )
 
@@ -1315,7 +1315,7 @@ function get_bin_logprobability(binmap::LinearDiscretizer, bin::Int)
     total_bin_width = binmap.binedges[end] - binmap.binedges[1]
     if abs(total_bin_width) > 1e-6
         bin_width = binmap.binedges[bin+1] - binmap.binedges[bin]
-        log(total_bin_width / bin_width)    
+        log(total_bin_width / bin_width)
     else
         0.0 # otherwise it contributes nothing
     end
@@ -1531,7 +1531,7 @@ function calc_categorical_score(
     )
 
     logl = 0.0
-    
+
     for (i,total) in enumerate(counts)
         if total > 0
             bin_width = binedges[i+1] - binedges[i]
@@ -1549,7 +1549,7 @@ function calc_bayesian_score(
 
     # NOTE: this does not compute the score components for the indicator variables
 
-    log_bayes_score_component(staticparams.ind_lat, modelparams.parents_lat, data.bincounts, data.discrete) + 
+    log_bayes_score_component(staticparams.ind_lat, modelparams.parents_lat, data.bincounts, data.discrete) +
         log_bayes_score_component(staticparams.ind_lon, modelparams.parents_lon, data.bincounts, data.discrete)
 end
 function calc_discretize_score(
@@ -1565,7 +1565,7 @@ function calc_discretize_score(
 
     # orig_score = 0.0
     # for i = 1 : size(stats, 1)
-        
+
     #     count = 0
     #     for j = 1 : size(stats, 2)
     #         count += stats[i,j]
@@ -1577,7 +1577,7 @@ function calc_discretize_score(
 
     score = 0.0
     for i = 1 : size(stats, 1)
-        
+
         total = 0
         for j = 1 : size(stats, 2)
             total += stats[i,j]
@@ -1602,17 +1602,17 @@ function calc_discretize_score(
     score = 0.0
 
     binmap = modelparams.binmaps[staticparams.ind_lat]
-    stats = statistics(staticparams.ind_lat, modelparams.parents_lat,
+    stats = SmileExtra.statistics(staticparams.ind_lat, modelparams.parents_lat,
                        data.bincounts, data.discrete)
     score += calc_discretize_score(binmap, stats)
     @assert(!isinf(score))
 
     binmap = modelparams.binmaps[staticparams.ind_lon]
-    stats = statistics(staticparams.ind_lon, modelparams.parents_lon,
+    stats = SmileExtra.statistics(staticparams.ind_lon, modelparams.parents_lon,
                        data.bincounts, data.discrete)
     score += calc_discretize_score(binmap, stats)
     @assert(!isinf(score))
-    
+
     score
 end
 function calc_component_score(
@@ -1634,7 +1634,7 @@ function calc_component_score(
     data::ModelData
     )
 
-    stats = statistics(target_index, target_parents,
+    stats = SmileExtra.statistics(target_index, target_parents,
                        data.bincounts, data.discrete)
 
     calc_component_score(target_index, target_parents, target_binmap, data, stats)
@@ -1647,7 +1647,7 @@ function calc_component_score(
     score_cache::Dict{Vector{Int}, Float64}
     )
 
-    stats = statistics(target_index, target_parents,
+    stats = SmileExtra.statistics(target_index, target_parents,
                        data.bincounts, data.discrete)
 
     calc_discretize_score(target_binmap, stats) +
@@ -1662,7 +1662,7 @@ function calc_complete_score(
 
     bayesian_score = calc_bayesian_score(data, modelparams, staticparams)
     discretize_score = calc_discretize_score(data, modelparams, staticparams)
-    
+
     @assert(!isinf(bayesian_score))
     @assert(!isinf(discretize_score))
 
@@ -1713,7 +1713,7 @@ function optimize_structure!(
 
     n_targets = 2
     n_indicators = length(features)-n_targets
-    
+
     chosen_lat = map(i->in(n_targets+i, parents_lat), [1:n_indicators])
     chosen_lon = map(i->in(n_targets+i, parents_lon), [1:n_indicators])
 
@@ -2052,7 +2052,7 @@ function optimize_indicator_bins!(
         end
 
         overwrite_model_params!(x)
-        
+
         calc_component_score(ind_lat, parents_lat, binmap_lat, data)
     end
     function optimization_objective_lon(x::Vector, grad::Vector)
@@ -2062,7 +2062,7 @@ function optimize_indicator_bins!(
         end
 
         overwrite_model_params!(x)
-        
+
         calc_component_score(ind_lon, parents_lon, binmap_lon, data)
     end
 
@@ -2101,7 +2101,7 @@ function optimize_indicator_bins!(
     data::ModelData
     )
 
-    
+
 
     lin = binmap.lin
     nbins = nlabels(lin)
@@ -2159,7 +2159,7 @@ function optimize_indicator_bins!(
         end
 
         overwrite_model_params!(x)
-        
+
         calc_component_score(ind_lat, parents_lat, binmap_lat, data)
     end
     function optimization_objective_lon(x::Vector, grad::Vector)
@@ -2169,7 +2169,7 @@ function optimize_indicator_bins!(
         end
 
         overwrite_model_params!(x)
-        
+
         calc_component_score(ind_lon, parents_lon, binmap_lon, data)
     end
 
@@ -2249,7 +2249,7 @@ function train(::Type{DynamicBayesianNetworkBehavior}, trainingframes::DataFrame
             verbosity = v
         elseif k == :preoptimize_target_bins
             preoptimize_target_bins = v
-        elseif k == :preoptimize_parent_bins
+        elseif k == :preoptimize_parent_bins || k == :preoptimize_indicator_bins
             preoptimize_indicator_bins = v
         elseif k == :optimize_structure
             optimize_structure = v
@@ -2257,6 +2257,8 @@ function train(::Type{DynamicBayesianNetworkBehavior}, trainingframes::DataFrame
             optimize_target_bins = v
         elseif k == :optimize_parent_bins
             optimize_parent_bins = v
+        elseif k == :ncandidate_bins
+            ncandidate_bins = v
         else
             warn("Train DynamicBayesianNetworkBehavior: ignoring $k")
         end
@@ -2284,7 +2286,7 @@ function train(::Type{DynamicBayesianNetworkBehavior}, trainingframes::DataFrame
 
     datavec = Array(Float64, size(continuous_data, 2))
     if preoptimize_target_bins
-        if verbosity > 0 
+        if verbosity > 0
             println("Optimizing Target Bins"); tic()
         end
 
@@ -2314,7 +2316,7 @@ function train(::Type{DynamicBayesianNetworkBehavior}, trainingframes::DataFrame
     # is_indicator_valid = trues(length(indicators))
     if preoptimize_indicator_bins
 
-        if verbosity > 0 
+        if verbosity > 0
             println("Optimizing Indicator Bins"); tic()
         end
 
@@ -2328,7 +2330,7 @@ function train(::Type{DynamicBayesianNetworkBehavior}, trainingframes::DataFrame
                 for (k,x) in enumerate(datavec)
                     datavec[k] = clamp(x, extremes[1], extremes[2])
                 end
-                disc2.binedges[:] = optimize_categorical_binning!(datavec, nbins, extremes, ncandidate_bins)                
+                disc2.binedges[:] = optimize_categorical_binning!(datavec, nbins, extremes, ncandidate_bins)
             elseif isa(disc2, HybridDiscretizer)
                 datavec[:] = continuous_data[i,:]
                 sort!(datavec)
@@ -2358,7 +2360,7 @@ function train(::Type{DynamicBayesianNetworkBehavior}, trainingframes::DataFrame
 
     # make sure to do discretization AFTER the preoptimization
     data = ModelData(continuous_data, modelparams, features)
-    
+
     starttime = time()
     iter = 0
     score = calc_complete_score(data, modelparams, staticparams)
@@ -2389,7 +2391,7 @@ function train(::Type{DynamicBayesianNetworkBehavior}, trainingframes::DataFrame
 
     if verbosity > 0
         println("\nELAPSED TIME: ", time()-starttime, "s")
-        println("FINAL: ", score)                                                                                       
+        println("FINAL: ", score)
 
         println("\nStructure:")
         println("lat: ", map(f->symbol(f), features[modelparams.parents_lat]))
@@ -2419,8 +2421,8 @@ function train(::Type{DynamicBayesianNetworkBehavior}, trainingframes::DataFrame
         binmapdict[symbol(f)] = b
     end
 
-    res = GraphLearningResult("trained", staticparams.features, staticparams.ind_lat, staticparams.ind_lon, 
-                              modelparams.parents_lat, modelparams.parents_lon, NaN, 
+    res = GraphLearningResult("trained", staticparams.features, staticparams.ind_lat, staticparams.ind_lon,
+                              modelparams.parents_lat, modelparams.parents_lon, NaN,
                               data.bincounts, data.discrete)
     model = dbnmodel(get_emstats(res, binmapdict))
 
