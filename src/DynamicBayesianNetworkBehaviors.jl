@@ -4,12 +4,12 @@ using AutomotiveDrivingModels
 using NLopt
 using Distributions
 using BayesNets
+using SmileExtra
 
 import Graphs: topological_sort_by_dfs, in_neighbors, num_vertices, num_edges
 import Discretizers: encode
 import AutomotiveDrivingModels: ModelTargets, AbstractVehicleBehavior, select_action, calc_action_loglikelihood,
                                 train, observe, _reverse_smoothing_sequential_moving_average
-import SmileExtra: log_bayes_score_component, statistics
 
 export
     DBNModel,
