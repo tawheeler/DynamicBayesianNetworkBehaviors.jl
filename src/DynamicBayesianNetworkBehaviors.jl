@@ -16,6 +16,7 @@ export
     DynamicBayesianNetworkBehavior,
     DBNSimParams,
     GraphLearningResult,
+    ParentFeatures,
 
     DEFAULT_INDICATORS,
     DEFAULT_DISCRETIZERS,
@@ -53,7 +54,7 @@ export
     sample!,
     sample_and_logP!,
     calc_log_probability_of_assignment,
-    calc_probability_distribution_over_assignments,
+    calc_probability_distribution_over_assignments!,
     calc_probability_for_uniform_sample_from_bin,
 
     export_to_text,
@@ -315,11 +316,10 @@ function get_counts_for_assignment(
     get_counts_for_assignment(model, targetind, parentindeces, parentassignments, bincounts)
 end
 
-function encode(model::DBNModel, observations::Dict{Symbol,Float64})
+function encode!(assignment::Dict{Symbol,Int}, model::DBNModel, observations::Dict{Symbol,Float64})
     # take each observation and bin it appropriately for the EM
     # returns a Dict{Symbol,Int}
 
-    assignment = Dict{Symbol,Int}()
     for (i,istarget) in enumerate(model.istarget)
         if !istarget
             sym = model.BN.names[i]
@@ -348,22 +348,21 @@ end
 function sample_and_logP!(
     model::DBNModel,
     assignment::Dict{Symbol, Int},
-    logPs::Dict{Symbol, Float64}=Dict{Symbol, Float64}(),
-    ordering::Vector{Int}=topological_sort_by_dfs(model.BN.dag)
+    logPs::Dict{Symbol, Float64},
+
+    ordering::Vector{Int}=topological_sort_by_dfs(model.BN.dag),
     )
 
-    for name in model.BN.names[ordering]
-        if !haskey(assignment, name)
-            cpd = BayesNets.cpd(model.BN, name)
+    for name in keys(logPs)
+        cpd = BayesNets.cpd(model.BN, name)
 
-            p = probvec(cpd, assignment)
-            i = rand(p)
-            assignment[name] = cpd.domain[i]
-            logPs[name] = log(p[i])
-        end
+        p = probvec(cpd, assignment)
+        i = rand(p)
+        assignment[name] = cpd.domain[i]
+        logPs[name] = log(p[i])
     end
 
-    (assignment, logPs)
+    logPs
 end
 function calc_log_probability_of_assignment(model::DBNModel, assignment::Dict{Symbol, Int}, sym::Symbol)
     # returns the discrete log probability of the given bin assignment
@@ -372,7 +371,7 @@ function calc_log_probability_of_assignment(model::DBNModel, assignment::Dict{Sy
     p = cpd.parameterFunction(assignment)
     log(p[b])
 end
-function calc_probability_distribution_over_assignments(
+function calc_probability_distribution_over_assignments!(
     dest::Vector{Float64},
     model::DBNModel,
     assignment::Dict{Symbol, Int},
@@ -382,6 +381,7 @@ function calc_probability_distribution_over_assignments(
     # NOTE (tim): cpd.parameterFunction(assignment) returns the actual probability vector, not a copy
     cpd = BayesNets.cpd(model.BN, target)
     copy!(dest, probvec(cpd, assignment))
+    dest
 end
 function calc_probability_for_uniform_sample_from_bin(
     discrete_prob::Float64,
@@ -550,6 +550,17 @@ type DynamicBayesianNetworkBehavior <: AbstractVehicleBehavior
     indicators    :: Vector{AbstractFeature}
     ordering      :: Vector{Int}
 
+    # preallocated memory
+    observations  :: Dict{Symbol,Float64}
+    assignment    :: Dict{Symbol,Int}
+    logPs         :: Dict{Symbol,Float64}
+    ind_lat_in_discretizers :: Int
+    ind_lon_in_discretizers :: Int
+    binprobs_lat  :: Vector{Float64}
+    binprobs_lon  :: Vector{Float64}
+    temp_binprobs_lat :: Vector{Float64}
+    temp_binprobs_lon :: Vector{Float64}
+
     function DynamicBayesianNetworkBehavior(
         model::DBNModel,
         simparams_lat::DBNSimParams=DBNSimParams(),
@@ -575,6 +586,25 @@ type DynamicBayesianNetworkBehavior <: AbstractVehicleBehavior
 
         retval.indicators = get_indicators(model)
         retval.ordering = topological_sort_by_dfs(model.BN.dag)
+        retval.observations = Dict{Symbol,Float64}()
+        retval.assignment = Dict{Symbol,Int}()
+        retval.logPs = Dict{Symbol,Float64}()
+
+        for f in retval.indicators
+            sym = symbol(f)
+            retval.observations[sym] = NaN
+            retval.assignment[sym] = 0
+        end
+        retval.logPs[retval.symbol_lat] = NaN
+        retval.logPs[retval.symbol_lon] = NaN
+
+        retval.ind_lat_in_discretizers = findfirst(model.BN.names, retval.symbol_lat)
+        retval.ind_lon_in_discretizers = findfirst(model.BN.names, retval.symbol_lon)
+
+        retval.binprobs_lat = Array(Float64, nlabels(model.discretizers[retval.ind_lat_in_discretizers]))
+        retval.binprobs_lon = Array(Float64, nlabels(model.discretizers[retval.ind_lon_in_discretizers]))
+        retval.temp_binprobs_lat = deepcopy(retval.binprobs_lat)
+        retval.temp_binprobs_lon = deepcopy(retval.binprobs_lon)
 
         retval
     end
@@ -629,12 +659,16 @@ function select_action(
     smoothcounts_lat = simparams_lat.smoothing_counts
     smoothcounts_lon = simparams_lon.smoothing_counts
 
-    bmap_lat = model.discretizers[findfirst(model.BN.names, symbol_lat)]
-    bmap_lon = model.discretizers[findfirst(model.BN.names, symbol_lon)]
+    bmap_lat = model.discretizers[behavior.ind_lat_in_discretizers]
+    bmap_lon = model.discretizers[behavior.ind_lon_in_discretizers]
 
-    observations = Features.observe(basics, carind, validfind, behavior.indicators)
-    assignment = encode(model, observations)
-    assignment, logPs = sample_and_logP!(model, assignment)
+    observations = behavior.observations
+    assignment = behavior.assignment
+    logPs = behavior.logPs
+
+    Features.observe!(observations, basics, carind, validfind, behavior.indicators)
+    encode!(assignment, model, observations)
+    sample_and_logP!(model, assignment, logPs, behavior.ordering)
 
     bin_lat = assignment[symbol_lat]
     bin_lon = assignment[symbol_lon]
@@ -653,13 +687,75 @@ function select_action(
     (action_lat, action_lon)
 end
 
+function _calc_action_loglikelihood(
+    behavior::DynamicBayesianNetworkBehavior,
+    action_lat::Float64,
+    action_lon::Float64,
+    )
+
+    model = behavior.model
+    symbol_lat = behavior.symbol_lat
+    symbol_lon = behavior.symbol_lon
+    bmap_lat = model.discretizers[behavior.ind_lat_in_discretizers]
+    bmap_lon = model.discretizers[behavior.ind_lon_in_discretizers]
+
+    bin_lat = encode(bmap_lat, action_lat)
+    bin_lon = encode(bmap_lon, action_lon)
+
+    observations = behavior.observations # assumed to already be populated
+    assignment = behavior.assignment
+    logPs = behavior.logPs
+
+    encode!(assignment, model, observations)
+
+    binprobs_lat = behavior.binprobs_lat
+    binprobs_lon = behavior.binprobs_lon
+
+    if is_parent(model, symbol_lon, symbol_lat) # lon -> lat
+        calc_probability_distribution_over_assignments!(binprobs_lon, model, assignment, symbol_lon)
+        fill!(binprobs_lat, 0.0)
+        temp = behavior.temp_binprobs_lon
+        for (i,p) in enumerate(binprobs_lon)
+            assignment[symbol_lon] = i
+            calc_probability_distribution_over_assignments!(temp, model, assignment, symbol_lat)
+            for (j,v) in enumerate(temp)
+                binprobs_lat[j] +=  v * p
+            end
+        end
+    elseif is_parent(model, symbol_lat, symbol_lon) # lat -> lon
+        calc_probability_distribution_over_assignments!(binprobs_lat, model, assignment, symbol_lat)
+        fill!(binprobs_lon, 0.0)
+        temp = behavior.temp_binprobs_lat
+        for (i,p) in enumerate(binprobs_lat)
+            assignment[symbol_lat] = i
+            calc_probability_distribution_over_assignments!(temp, model, assignment, symbol_lon)
+            for (j,v) in enumerate(temp)
+                binprobs_lon[j] +=  v * p
+            end
+        end
+    else
+        calc_probability_distribution_over_assignments!(binprobs_lat, model, assignment, symbol_lat)
+        calc_probability_distribution_over_assignments!(binprobs_lon, model, assignment, symbol_lon)
+    end
+
+    P_bin_lat = binprobs_lat[bin_lat]
+    P_bin_lon = binprobs_lon[bin_lon]
+
+    p_within_bin_lat = calc_probability_for_uniform_sample_from_bin(P_bin_lat, bmap_lat, bin_lat)
+    p_within_bin_lon = calc_probability_for_uniform_sample_from_bin(P_bin_lon, bmap_lon, bin_lon)
+
+    # println("actions: ", action_lat, "  ", action_lon)
+
+    log(p_within_bin_lat) + log(p_within_bin_lon)
+end
+
 function calc_action_loglikelihood(
     basics::FeatureExtractBasicsPdSet,
     behavior::DynamicBayesianNetworkBehavior,
     carind::Int,
     validfind::Int,
     action_lat::Float64,
-    action_lon::Float64
+    action_lon::Float64,
     )
 
     model = behavior.model
@@ -669,51 +765,49 @@ function calc_action_loglikelihood(
     bmap_lon = model.discretizers[findfirst(model.BN.names, symbol_lon)]
 
     if min(bmap_lat) ≤ action_lat ≤ max(bmap_lat) &&
-        min(bmap_lon) ≤ action_lon ≤ max(bmap_lon)
+       min(bmap_lon) ≤ action_lon ≤ max(bmap_lon)
 
+        Features.observe!(behavior.observations, basics, carind, validfind, behavior.indicators)
 
-        bin_lat = encode(bmap_lat, action_lat)
-        bin_lon = encode(bmap_lon, action_lon)
-
-        observations = Features.observe(basics, carind, validfind, behavior.indicators)
-        assignment = encode(model, observations)
-
-        binprobs_lat = Array(Float64, nlabels(bmap_lat))
-        binprobs_lon = Array(Float64, nlabels(bmap_lon))
-
-        if is_parent(model, symbol_lon, symbol_lat) # lon -> lat
-            calc_probability_distribution_over_assignments(binprobs_lon, model, assignment, symbol_lon)
-            fill!(binprobs_lat, 0.0)
-            temp = Array(Float64, nlabels(bmap_lon))
-            for (i,p) in enumerate(binprobs_lon)
-                assignment[symbol_lon] = i
-                binprobs_lat += calc_probability_distribution_over_assignments(temp, model, assignment, symbol_lat) .* p
-            end
-        elseif is_parent(model, symbol_lat, symbol_lon) # lat -> lon
-            calc_probability_distribution_over_assignments(binprobs_lat, model, assignment, symbol_lat)
-            fill!(binprobs_lon, 0.0)
-            temp = Array(Float64, nlabels(bmap_lat))
-            for (i,p) in enumerate(binprobs_lat)
-                assignment[symbol_lat] = i
-                binprobs_lon += calc_probability_distribution_over_assignments(temp, model, assignment, symbol_lon) .* p
-            end
-        else
-            calc_probability_distribution_over_assignments(binprobs_lat, model, assignment, symbol_lat)
-            calc_probability_distribution_over_assignments(binprobs_lon, model, assignment, symbol_lon)
-        end
-
-        P_bin_lat = binprobs_lat[bin_lat]
-        P_bin_lon = binprobs_lon[bin_lon]
-
-        p_within_bin_lat = calc_probability_for_uniform_sample_from_bin(P_bin_lat, bmap_lat, bin_lat)
-        p_within_bin_lon = calc_probability_for_uniform_sample_from_bin(P_bin_lon, bmap_lon, bin_lon)
-
-        # println("actions: ", action_lat, "  ", action_lon)
-
-        return log(p_within_bin_lat * p_within_bin_lon)
+        _calc_action_loglikelihood(behavior, action_lat, action_lon)
     else
         print_with_color(:red, STDOUT, "\nDynamicBayesianNetworkBehaviors calc_log_prob: HIT\n")
         print_with_color(:red, STDOUT, "validfind: $validfind\n")
+        print_with_color(:red, STDOUT, "$(min(bmap_lat))  $action_lat $(max(bmap_lat))\n")
+        print_with_color(:red, STDOUT, "$(min(bmap_lon))  $action_lon $(max(bmap_lon))\n")
+        -Inf
+    end
+end
+function calc_action_loglikelihood(
+    behavior::DynamicBayesianNetworkBehavior,
+    features::DataFrame,
+    frameind::Integer,
+    )
+
+    action_lat = features[frameind, symbol(FUTUREDESIREDANGLE_250MS)]::Float64
+    action_lon = features[frameind, symbol(FUTUREACCELERATION_250MS)]::Float64
+
+    model = behavior.model
+    symbol_lat = behavior.symbol_lat
+    symbol_lon = behavior.symbol_lon
+    bmap_lat = model.discretizers[findfirst(model.BN.names, symbol_lat)]
+    bmap_lon = model.discretizers[findfirst(model.BN.names, symbol_lon)]
+
+
+    # action_lat = clamp(action_lat, min(bmap_lat), max(bmap_lat))
+    # action_lon = clamp(action_lon, min(bmap_lon), max(bmap_lon))
+
+    if min(bmap_lat) ≤ action_lat ≤ max(bmap_lat) &&
+       min(bmap_lon) ≤ action_lon ≤ max(bmap_lon)
+
+        for name in keys(behavior.observations)
+            behavior.observations[name] = features[frameind, name]
+        end
+
+        _calc_action_loglikelihood(behavior, action_lat, action_lon)
+    else
+        print_with_color(:red, STDOUT, "\nDynamicBayesianNetworkBehaviors calc_log_prob: HIT\n")
+        print_with_color(:red, STDOUT, "frameind: $frameind\n")
         print_with_color(:red, STDOUT, "$(min(bmap_lat))  $action_lat $(max(bmap_lat))\n")
         print_with_color(:red, STDOUT, "$(min(bmap_lon))  $action_lon $(max(bmap_lon))\n")
         -Inf
@@ -725,6 +819,9 @@ end
 type ParentFeatures
     lat :: Vector{AbstractFeature}
     lon :: Vector{AbstractFeature}
+
+    ParentFeatures() = new(AbstractFeature[], AbstractFeature[])
+    ParentFeatures(lat::Vector{AbstractFeature}, lon::Vector{AbstractFeature}) = new(lat, lon)
 end
 
 type GraphLearningResult
@@ -839,9 +936,9 @@ const DEFAULT_INDICATORS = [
 const DEFAULT_DISCRETIZERS = Dict{Symbol,AbstractDiscretizer}()
     DEFAULT_DISCRETIZERS[:f_turnrate_250ms      ] = LinearDiscretizer([-0.025,-0.02,-0.015,-0.01,-0.005,0.005,0.01,0.015,0.02,0.025], Int)
     DEFAULT_DISCRETIZERS[:f_turnrate_500ms      ] = LinearDiscretizer([-0.025,-0.02,-0.015,-0.01,-0.005,0.005,0.01,0.015,0.02,0.025], Int)
-    DEFAULT_DISCRETIZERS[:f_accel_250ms         ] = LinearDiscretizer([-3.25,-3.045338252335337,-2.0,-1.50593693678868,-0.24991770599882523,0.06206203400761478,0.2489269478410686,0.5,1.8], Int)
+    DEFAULT_DISCRETIZERS[:f_accel_250ms         ] = LinearDiscretizer([-5.00,-3.045338252335337,-2.0,-1.50593693678868,-0.24991770599882523,0.06206203400761478,0.2489269478410686,0.5,2.6], Int)
     DEFAULT_DISCRETIZERS[:f_accel_500ms         ] = LinearDiscretizer([-1.0,-0.25,-0.08,0.0,0.08,0.25,1.0], Int)
-    DEFAULT_DISCRETIZERS[:f_des_angle_250ms     ] = LinearDiscretizer([-0.09,-0.05,-0.03555530775035057,-0.02059935606012066,-0.005175260331415599,0.00642120613623413,0.02143002425291505,0.05,0.09], Int)
+    DEFAULT_DISCRETIZERS[:f_des_angle_250ms     ] = LinearDiscretizer([-0.25,-0.05,-0.03555530775035057,-0.02059935606012066,-0.005175260331415599,0.00642120613623413,0.02143002425291505,0.05,0.25], Int)
     DEFAULT_DISCRETIZERS[:f_des_angle_500ms     ] = LinearDiscretizer([-0.025,-0.01,-0.005,0.005,0.01,0.025], Int)
     DEFAULT_DISCRETIZERS[:f_des_speed_250ms     ] = LinearDiscretizer([-2.0,-1.0,-0.5,0.0,0.5,1.0,2.0]+29.06, Int)
     DEFAULT_DISCRETIZERS[:f_des_speed_500ms     ] = LinearDiscretizer([-2.0,-1.0,-0.5,0.0,0.5,1.0,2.0]+29.06, Int)
@@ -1080,17 +1177,16 @@ function discretize{D<:AbstractDiscretizer}(
 
             @assert(!isna(value))
             # @assert(supports_encoding(dmap, value))
-            try
-                mat[i,j] = int(encode(dmap, value))
-            catch
-                println(dmap)
-                println("feature: ", features[i], "  ", symbol(features[i]))
-                println("value: ", value, " at index ($i,$j)")
-                println(map(f->symbol(f), features[i-5:i+5]))
-                println(data[i-5:i+5,j])
-                error("Bad")
-            end
-
+            # try
+                mat[i,j] = encode(dmap, value)
+            # catch
+            #     println(dmap)
+            #     println("feature: ", features[i], "  ", symbol(features[i]))
+            #     println("value: ", value, " at index ($i,$j)")
+            #     println(map(f->symbol(f), features[i-2:i+2]))
+            #     println(data[i-5:i+5,j])
+            #     error("Bad")
+            # end
         end
     end
 
@@ -1420,7 +1516,7 @@ function _pre_optimize_categorical_binning(
         # println(binedge_assignments, "  ", score, "  ", counts)
     end
 
-    println(best_binedges, "  ", best_score)
+    # println(best_binedges, "  ", best_score)
 
     best_binedges
 end
@@ -1684,7 +1780,7 @@ function optimize_categorical_binning!(
     @assert(!isempty(data))
     @assert(nbins > 1)
     @assert(extrema[1] < extrema[2])
-    @assert(ncandidate_bins ≥ nbins)
+    ncandidate_bins = max(nbins, ncandidate_bins)
 
     _optimize_categorical_binning(sort!(data), nbins, extrema, ncandidate_bins)
 end
@@ -1753,7 +1849,7 @@ function optimize_structure!(
                     end
                 end
             end
-        else
+        elseif verbosity > 0
             warn("DBNB: optimize_structure: max parents lat reached")
         end
         for (idx, i) in enumerate(parents_lat)
@@ -1783,7 +1879,7 @@ function optimize_structure!(
                     end
                 end
             end
-        else
+        elseif verbosity > 0
             warn("DBNB: optimize_structure: max parents lon reached")
         end
         for (idx, i) in enumerate(parents_lon)
@@ -2219,8 +2315,8 @@ function optimize_parent_bins!(
 end
 
 function train(::Type{DynamicBayesianNetworkBehavior}, trainingframes::DataFrame;
-    starting_structure::ParentFeatures=ParentFeatures(AbstractFeature[], AbstractFeature[]),
-    forced::ParentFeatures=ParentFeatures(AbstractFeature[], AbstractFeature[]),
+    starting_structure::ParentFeatures=ParentFeatures(),
+    forced::ParentFeatures=ParentFeatures(),
     targetset::ModelTargets=ModelTargets(FUTUREDESIREDANGLE_250MS, FUTUREACCELERATION_250MS),
     indicators::Vector{AbstractFeature}=copy(DEFAULT_INDICATORS),
     discretizerdict::Dict{Symbol, AbstractDiscretizer}=deepcopy(DEFAULT_DISCRETIZERS),
@@ -2231,9 +2327,12 @@ function train(::Type{DynamicBayesianNetworkBehavior}, trainingframes::DataFrame
     optimize_structure::Bool=true,
     optimize_target_bins::Bool=true,
     optimize_parent_bins::Bool=true,
+    max_parents::Int=6,
     args::Dict=Dict{Symbol,Any}()
     )
 
+    nbins_lat = -1
+    nbins_lon = -1
     for (k,v) in args
         if k == :starting_structure
             starting_structure = v
@@ -2259,12 +2358,16 @@ function train(::Type{DynamicBayesianNetworkBehavior}, trainingframes::DataFrame
             optimize_parent_bins = v
         elseif k == :ncandidate_bins
             ncandidate_bins = v
+        elseif k == :nbins_lat
+            nbins_lat = v
+        elseif k == :nbins_lon
+            nbins_lon = v
+        elseif k == :max_parents
+            max_parents = v
         else
             warn("Train DynamicBayesianNetworkBehavior: ignoring $k")
         end
     end
-
-    verbosity=2
 
     targets = [targetset.lat, targetset.lon]
 
@@ -2279,7 +2382,7 @@ function train(::Type{DynamicBayesianNetworkBehavior}, trainingframes::DataFrame
     modelparams = ModelParams(map(f->discretizerdict[symbol(f)], features), parents_lat, parents_lon)
     staticparams = ModelStaticParams(ind_lat, ind_lon, features)
 
-    println("size: ", size(trainingframes))
+    # println("size: ", size(trainingframes))
     continuous_dataframe = deepcopy(trainingframes)
     continuous_dataframe = drop_invalid_discretization_rows(discretizerdict, features, [ind_lat, ind_lon], continuous_dataframe)
     continuous_data = convert_dataset_to_matrix(continuous_dataframe, features)
@@ -2290,21 +2393,39 @@ function train(::Type{DynamicBayesianNetworkBehavior}, trainingframes::DataFrame
             println("Optimizing Target Bins"); tic()
         end
 
+        ###################
+        # lat
+
         datavec[:] = continuous_data[ind_lat,:]
         disc::LinearDiscretizer = modelparams.binmaps[ind_lat]
-        nbins = nlabels(disc)
         extremes = (disc.binedges[1], disc.binedges[end])
+        nbins = nlabels(disc)
+        if nbins_lat != -1
+            nbins = nbins_lat
+            disc = LinearDiscretizer(linspace(extremes[1], extremes[2], nbins+1))
+            modelparams.binmaps[ind_lat] = disc
+        end
+
         for (i,x) in enumerate(datavec)
-            datavec[i] = clamp(x, extremes[1], extremes[2])
+            @assert(extremes[1] ≤ x ≤ extremes[2])
         end
         disc.binedges[:] = optimize_categorical_binning!(datavec, nbins, extremes, ncandidate_bins)
 
+        ###################
+        # lon
+
         datavec[:] = continuous_data[ind_lon,:]
         disc = modelparams.binmaps[ind_lon]::LinearDiscretizer
-        nbins = nlabels(disc)
         extremes = (disc.binedges[1], disc.binedges[end])
+        nbins = nlabels(disc)
+        if nbins_lon != -1
+            nbins = nbins_lon
+            disc = LinearDiscretizer(linspace(extremes[1], extremes[2], nbins+1))
+            modelparams.binmaps[ind_lon] = disc
+        end
+
         for (i,x) in enumerate(datavec)
-            datavec[i] = clamp(x, extremes[1], extremes[2])
+            @assert(extremes[1] ≤ x ≤ extremes[2])
         end
         disc.binedges[:] = optimize_categorical_binning!(datavec, nbins, extremes, ncandidate_bins)
 
@@ -2374,7 +2495,7 @@ function train(::Type{DynamicBayesianNetworkBehavior}, trainingframes::DataFrame
             verbosity == 0 || @printf("\nITER %d: %.4f (Δ%.4f) t=%.0f\n", iter, score, score_diff, time()-starttime)
 
             if optimize_structure
-                optimize_structure!(modelparams, staticparams, data, forced=(forced_lat, forced_lon), verbosity=verbosity)
+                optimize_structure!(modelparams, staticparams, data, forced=(forced_lat, forced_lon), max_parents=max_parents, verbosity=verbosity)
             end
             if optimize_target_bins
                 optimize_target_bins!(modelparams, staticparams, data)
