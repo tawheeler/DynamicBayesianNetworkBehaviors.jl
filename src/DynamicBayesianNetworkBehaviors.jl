@@ -1431,16 +1431,11 @@ function bins_actual_to_unit_range!(bin_inner_edges::Vector{Float64}, bin_lo::Fl
 end
 
 function get_bin_logprobability(binmap::LinearDiscretizer, bin::Int)
-    total_bin_width = binmap.binedges[end] - binmap.binedges[1]
-    if abs(total_bin_width) > 1e-6
-        bin_width = binmap.binedges[bin+1] - binmap.binedges[bin]
-        log(total_bin_width / bin_width)
-    else
-        0.0 # otherwise it contributes nothing
-    end
+    bin_width = binmap.binedges[bin+1] - binmap.binedges[bin]
+    -log(bin_width)
 end
 function get_bin_logprobability(binmap::CategoricalDiscretizer, bin::Int)
-    # values samples from a categorical discretizer have no pdf
+    # values sampled from a categorical discretizer have no pdf
     0.0
 end
 function get_bin_logprobability(binmap::HybridDiscretizer, bin::Int)
@@ -1595,8 +1590,8 @@ function calc_categorical_loglikelihood(
     end
 
     m = length(data_sorted_ascending)
-    width_tot = binedges[end] - binedges[1]
-    logl = m*log(width_tot) - m*log(m)
+    # width_tot = binedges[end] - binedges[1]
+    logl = - m*log(m) # + m*log(width_tot)
     i = 2
     total = 0
     for x in data_sorted_ascending
@@ -1919,71 +1914,71 @@ function optimize_structure!(
         end
 
         # check edge between lat <-> lon
-        # if !in(ind_lon, parents_lat) && !in(ind_lat, parents_lon)
-        #     # lon -> lat
-        #     if length(parents_lat) < max_parents
-        #         new_parents = unshift!(copy(parents_lat), ind_lon)
-        #         new_score_diff = calc_component_score(ind_lat, new_parents, binmap_lat, data, score_cache_lat) - score_lat
-        #         if new_score_diff > score_diff + BAYESIAN_SCORE_IMPROVEMENT_THRESOLD
-        #             selected_lat = true
-        #             score_diff = new_score_diff
-        #             new_parents_lat = new_parents
-        #         end
-        #     end
+        if !in(ind_lon, parents_lat) && !in(ind_lat, parents_lon)
+            # lon -> lat
+            if length(parents_lat) < max_parents
+                new_parents = unshift!(copy(parents_lat), ind_lon)
+                new_score_diff = calc_component_score(ind_lat, new_parents, binmap_lat, data, score_cache_lat) - score_lat
+                if new_score_diff > score_diff + BAYESIAN_SCORE_IMPROVEMENT_THRESOLD
+                    selected_lat = true
+                    score_diff = new_score_diff
+                    new_parents_lat = new_parents
+                end
+            end
 
-        #     # lat -> lon
-        #     if length(parents_lon) < max_parents
-        #         new_parents = unshift!(copy(parents_lon), ind_lat)
-        #         new_score_diff = calc_component_score(ind_lon, new_parents, binmap_lon, data, score_cache_lon) - score_lon
-        #         if new_score_diff > score_diff + BAYESIAN_SCORE_IMPROVEMENT_THRESOLD
-        #             selected_lat = false
-        #             score_diff = new_score_diff
-        #             new_parents_lon = new_parents
-        #         end
-        #     end
-        # elseif in(ind_lon, parents_lat) && !in(features[ind_lon], forced_lat)
+            # lat -> lon
+            if length(parents_lon) < max_parents
+                new_parents = unshift!(copy(parents_lon), ind_lat)
+                new_score_diff = calc_component_score(ind_lon, new_parents, binmap_lon, data, score_cache_lon) - score_lon
+                if new_score_diff > score_diff + BAYESIAN_SCORE_IMPROVEMENT_THRESOLD
+                    selected_lat = false
+                    score_diff = new_score_diff
+                    new_parents_lon = new_parents
+                end
+            end
+        elseif in(ind_lon, parents_lat) && !in(features[ind_lon], forced_lat)
 
-        #     # try edge removal
-        #     new_parents = deleteat!(copy(parents_lat), ind_lat)
-        #     new_score_diff = calc_component_score(ind_lat, new_parents, binmap_lat, data, score_cache_lat) - score_lat
-        #     if new_score_diff > score_diff + BAYESIAN_SCORE_IMPROVEMENT_THRESOLD
-        #         selected_lat = true
-        #         score_diff = new_score_diff
-        #         new_parents_lat = new_parents
-        #     end
+            # try edge removal
+            new_parents = deleteat!(copy(parents_lat), ind_lat)
+            new_score_diff = calc_component_score(ind_lat, new_parents, binmap_lat, data, score_cache_lat) - score_lat
+            if new_score_diff > score_diff + BAYESIAN_SCORE_IMPROVEMENT_THRESOLD
+                selected_lat = true
+                score_diff = new_score_diff
+                new_parents_lat = new_parents
+            end
 
-        #     # try edge reversal (lat -> lon)
-        #     if length(parents_lon) < max_parents
-        #         new_parents = unshift!(copy(parents_lon), ind_lat)
-        #         new_score_diff = calc_component_score(ind_lon, new_parents, binmap_lon, data, score_cache_lon) - score_lon
-        #         if new_score_diff > score_diff + BAYESIAN_SCORE_IMPROVEMENT_THRESOLD
-        #             selected_lat = false
-        #             score_diff = new_score_diff
-        #             new_parents_lon = new_parents
-        #         end
-        #     end
-        # elseif in(ind_lat, parents_lon)  && !in(features[ind_lat], forced_lon)
+            # try edge reversal (lat -> lon)
+            if length(parents_lon) < max_parents
+                new_parents = unshift!(copy(parents_lon), ind_lat)
+                new_score_diff = calc_component_score(ind_lon, new_parents, binmap_lon, data, score_cache_lon) - score_lon
+                if new_score_diff > score_diff + BAYESIAN_SCORE_IMPROVEMENT_THRESOLD
+                    selected_lat = false
+                    score_diff = new_score_diff
+                    new_parents_lon = new_parents
+                end
+            end
+        elseif in(ind_lat, parents_lon)  && !in(features[ind_lat], forced_lon)
 
-        #     # try edge removal
-        #     new_parents = deleteat!(copy(parents_lon), ind_lat)
-        #     new_score_diff = calc_component_score(ind_lon, new_parents, binmap_lon, data, score_cache_lon) - score_lon
-        #     if new_score_diff > score_diff + BAYESIAN_SCORE_IMPROVEMENT_THRESOLD
-        #         selected_lat = false
-        #         score_diff = new_score_diff
-        #         new_parents_lon = new_parents
-        #     end
+            # try edge removal
+            new_parents = deleteat!(copy(parents_lon), ind_lat)
+            new_score_diff = calc_component_score(ind_lon, new_parents, binmap_lon, data, score_cache_lon) - score_lon
+            if new_score_diff > score_diff + BAYESIAN_SCORE_IMPROVEMENT_THRESOLD
+                selected_lat = false
+                score_diff = new_score_diff
+                new_parents_lon = new_parents
+            end
 
-        #     # try edge reversal (lon -> lat)
-        #     if length(parents_lat) < max_parents
-        #         new_parents = unshift!(copy(parents_lat), ind_lon)
-        #         new_score_diff = calc_component_score(ind_lat, new_parents, binmap_lat, data, score_cache_lat) - score_lat
-        #         if new_score_diff > score_diff + BAYESIAN_SCORE_IMPROVEMENT_THRESOLD
-        #             selected_lat = true
-        #             score_diff = new_score_diff
-        #             new_parents_lat = new_parents
-        #         end
-        #     end
-        # end
+            # try edge reversal (lon -> lat)
+            if length(parents_lat) < max_parents
+                new_parents = unshift!(copy(parents_lat), ind_lon)
+                new_score_diff = calc_component_score(ind_lat, new_parents, binmap_lat, data, score_cache_lat) - score_lat
+                if new_score_diff > score_diff + BAYESIAN_SCORE_IMPROVEMENT_THRESOLD
+                    selected_lat = true
+                    score_diff = new_score_diff
+                    new_parents_lat = new_parents
+                end
+            end
+        end
 
         # select best
         if score_diff > 0.0
