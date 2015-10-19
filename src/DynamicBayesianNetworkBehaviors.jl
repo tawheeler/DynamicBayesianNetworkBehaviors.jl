@@ -333,17 +333,31 @@ function encode!(assignment::Dict{Symbol,Int}, model::DBNModel, observations::Di
 end
 function sample!(model::DBNModel, assignment::Dict{Symbol, Int}, ordering::Vector{Int}=topological_sort_by_dfs(model.BN.dag))
     #=
-    run through nodes in topological order, building the instantiation vector as we go
-    nodes we already know we use
-    nodes we do not know we sample from
-    modifies assignment to include new sampled symbols
+    Run through nodes in topological order, building the instantiation vector as we go
+    We use nodes we already know to condition on the distribution for nodes we do not
+    Modifies assignment to include newly sampled symbols
     =#
 
+    # for name in model.BN.names[ordering]
+    #     if !haskey(assignment, name)
+    #         assignment[name] = BayesNets.rand(BayesNets.cpd(model.BN, name), assignment)
+    #     end
+    # end
+
     for name in model.BN.names[ordering]
-        if !haskey(assignment, name)
-            assignment[name] = BayesNets.rand(BayesNets.cpd(model.BN, name), assignment)
+        cpd = BayesNets.cpd(model.BN, name)
+
+        p = probvec(cpd, assignment)
+        r = rand()
+        i = 1
+        p_tot = 0.0
+        while p_tot + p[i] < r && i < length(p)
+            p_tot += p[i]
+            i += 1
         end
+        assignment[name] = cpd.domain[i]
     end
+
     assignment
 end
 function sample_and_logP!(
@@ -354,11 +368,19 @@ function sample_and_logP!(
     ordering::Vector{Int}=topological_sort_by_dfs(model.BN.dag),
     )
 
-    for name in keys(logPs)
+    for name in model.BN.names[ordering]
         cpd = BayesNets.cpd(model.BN, name)
 
         p = probvec(cpd, assignment)
-        i = rand(p)
+
+        r = rand()
+        i = 1
+        p_tot = 0.0
+        while p_tot + p[i] < r && i < length(p)
+            p_tot += p[i]
+            i += 1
+        end
+
         assignment[name] = cpd.domain[i]
         logPs[name] = log(p[i])
     end
@@ -666,11 +688,10 @@ function select_action(
 
     observations = behavior.observations
     assignment = behavior.assignment
-    logPs = behavior.logPs
 
     Features.observe!(observations, basics, carind, validfind, behavior.indicators)
     encode!(assignment, model, observations)
-    sample_and_logP!(model, assignment, logPs, behavior.ordering)
+    sample!(model, assignment, behavior.ordering)
 
     bin_lat = assignment[symbol_lat]
     bin_lon = assignment[symbol_lon]
