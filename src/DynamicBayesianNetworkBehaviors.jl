@@ -713,32 +713,32 @@ function _calc_action_loglikelihood(
     encode!(assignment, model, observations)
 
     # TODO(tim): put this back in; temporarily removed for debugging
-    # if is_parent(model, symbol_lon, symbol_lat) # lon -> lat
-    #     calc_probability_distribution_over_assignments!(binprobs_lon, model, assignment, symbol_lon)
-    #     fill!(binprobs_lat, 0.0)
-    #     temp = behavior.temp_binprobs_lon
-    #     for (i,p) in enumerate(binprobs_lon)
-    #         assignment[symbol_lon] = i
-    #         calc_probability_distribution_over_assignments!(temp, model, assignment, symbol_lat)
-    #         for (j,v) in enumerate(temp)
-    #             binprobs_lat[j] +=  v * p
-    #         end
-    #     end
-    # elseif is_parent(model, symbol_lat, symbol_lon) # lat -> lon
-    #     calc_probability_distribution_over_assignments!(binprobs_lat, model, assignment, symbol_lat)
-    #     fill!(binprobs_lon, 0.0)
-    #     temp = behavior.temp_binprobs_lat
-    #     for (i,p) in enumerate(binprobs_lat)
-    #         assignment[symbol_lat] = i
-    #         calc_probability_distribution_over_assignments!(temp, model, assignment, symbol_lon)
-    #         for (j,v) in enumerate(temp)
-    #             binprobs_lon[j] +=  v * p
-    #         end
-    #     end
-    # else # lat and lon are conditionally independent
+    if is_parent(model, symbol_lon, symbol_lat) # lon -> lat
+        calc_probability_distribution_over_assignments!(binprobs_lon, model, assignment, symbol_lon)
+        fill!(binprobs_lat, 0.0)
+        temp = behavior.temp_binprobs_lon
+        for (i,p) in enumerate(binprobs_lon)
+            assignment[symbol_lon] = i
+            calc_probability_distribution_over_assignments!(temp, model, assignment, symbol_lat)
+            for (j,v) in enumerate(temp)
+                binprobs_lat[j] +=  v * p
+            end
+        end
+    elseif is_parent(model, symbol_lat, symbol_lon) # lat -> lon
+        calc_probability_distribution_over_assignments!(binprobs_lat, model, assignment, symbol_lat)
+        fill!(binprobs_lon, 0.0)
+        temp = behavior.temp_binprobs_lat
+        for (i,p) in enumerate(binprobs_lat)
+            assignment[symbol_lat] = i
+            calc_probability_distribution_over_assignments!(temp, model, assignment, symbol_lon)
+            for (j,v) in enumerate(temp)
+                binprobs_lon[j] +=  v * p
+            end
+        end
+    else # lat and lon are conditionally independent
         calc_probability_distribution_over_assignments!(binprobs_lat, model, assignment, symbol_lat)
         calc_probability_distribution_over_assignments!(binprobs_lon, model, assignment, symbol_lon)
-    # end
+    end
 
     P_bin_lat = binprobs_lat[bin_lat]
     P_bin_lon = binprobs_lon[bin_lon]
