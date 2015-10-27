@@ -2332,6 +2332,8 @@ function optimize_parent_bins!(
     nothing
 end
 
+trains_with_nona(::DynamicBayesianNetworkBehavior) = false
+trains_with_nona(::Type{DynamicBayesianNetworkBehavior}) = false
 function train(::Type{DynamicBayesianNetworkBehavior}, trainingframes::DataFrame;
     starting_structure::ParentFeatures=ParentFeatures(),
     forced::ParentFeatures=ParentFeatures(),
