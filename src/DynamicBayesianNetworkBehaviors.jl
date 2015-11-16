@@ -1881,64 +1881,64 @@ function optimize_structure!(
         score_diff = 0.0
 
         # check edges for indicators -> lat
-        # if length(parents_lat) < max_parents
-        #     for i = 1 : n_indicators
-        #         # add edge if it does not exist
-        #         if !chosen_lat[i]
-        #             new_parents = sort!(push!(copy(parents_lat), n_targets+i))
-        #             new_score_diff = calc_component_score(ind_lat, new_parents, binmap_lat, data, score_cache_lat) - score_lat
-        #             if new_score_diff > score_diff + BAYESIAN_SCORE_IMPROVEMENT_THRESOLD
-        #                 selected_lat = true
-        #                 score_diff = new_score_diff
-        #                 new_parents_lat = new_parents
-        #             end
-        #         end
-        #     end
-        # elseif verbosity > 0
-        #     warn("DBNB: optimize_structure: max parents lat reached")
-        # end
-        # for (idx, i) in enumerate(parents_lat)
-        #     # remove edge if it does exist
-        #     if !in(features[i], forced_lat)
-        #         new_parents = deleteat!(copy(parents_lat), idx)
-        #         new_score_diff = calc_component_score(ind_lat, new_parents, binmap_lat, data, score_cache_lat) - score_lat
-        #         if new_score_diff > score_diff + BAYESIAN_SCORE_IMPROVEMENT_THRESOLD
-        #             selected_lat = true
-        #             score_diff = new_score_diff
-        #             new_parents_lat = new_parents
-        #         end
-        #     end
-        # end
+        if length(parents_lat) < max_parents
+            for i = 1 : n_indicators
+                # add edge if it does not exist
+                if !chosen_lat[i]
+                    new_parents = sort!(push!(copy(parents_lat), n_targets+i))
+                    new_score_diff = calc_component_score(ind_lat, new_parents, binmap_lat, data, score_cache_lat) - score_lat
+                    if new_score_diff > score_diff + BAYESIAN_SCORE_IMPROVEMENT_THRESOLD
+                        selected_lat = true
+                        score_diff = new_score_diff
+                        new_parents_lat = new_parents
+                    end
+                end
+            end
+        elseif verbosity > 0
+            warn("DBNB: optimize_structure: max parents lat reached")
+        end
+        for (idx, i) in enumerate(parents_lat)
+            # remove edge if it does exist
+            if !in(features[i], forced_lat)
+                new_parents = deleteat!(copy(parents_lat), idx)
+                new_score_diff = calc_component_score(ind_lat, new_parents, binmap_lat, data, score_cache_lat) - score_lat
+                if new_score_diff > score_diff + BAYESIAN_SCORE_IMPROVEMENT_THRESOLD
+                    selected_lat = true
+                    score_diff = new_score_diff
+                    new_parents_lat = new_parents
+                end
+            end
+        end
 
         # check edges for indicators -> lon
-        # if length(parents_lon) < max_parents
-        #     for i = 1 : n_indicators
-        #         # add edge if it does not exist
-        #         if !chosen_lon[i]
-        #             new_parents = sort!(push!(copy(parents_lon), n_targets+i))
-        #             new_score_diff = calc_component_score(ind_lon, new_parents, binmap_lon, data, score_cache_lon) - score_lon
-        #             if new_score_diff > score_diff + BAYESIAN_SCORE_IMPROVEMENT_THRESOLD
-        #                 selected_lat = false
-        #                 score_diff = new_score_diff
-        #                 new_parents_lon = new_parents
-        #             end
-        #         end
-        #     end
-        # elseif verbosity > 0
-        #     warn("DBNB: optimize_structure: max parents lon reached")
-        # end
-        # for (idx, i) in enumerate(parents_lon)
-        #     # remove edge if it does exist
-        #     if !in(features[i], forced_lon)
-        #         new_parents = deleteat!(copy(parents_lon), idx)
-        #         new_score_diff = calc_component_score(ind_lon, new_parents, binmap_lon, data, score_cache_lon) - score_lon
-        #         if new_score_diff > score_diff + BAYESIAN_SCORE_IMPROVEMENT_THRESOLD
-        #             selected_lat = false
-        #             score_diff = new_score_diff
-        #             new_parents_lon = new_parents
-        #         end
-        #     end
-        # end
+        if length(parents_lon) < max_parents
+            for i = 1 : n_indicators
+                # add edge if it does not exist
+                if !chosen_lon[i]
+                    new_parents = sort!(push!(copy(parents_lon), n_targets+i))
+                    new_score_diff = calc_component_score(ind_lon, new_parents, binmap_lon, data, score_cache_lon) - score_lon
+                    if new_score_diff > score_diff + BAYESIAN_SCORE_IMPROVEMENT_THRESOLD
+                        selected_lat = false
+                        score_diff = new_score_diff
+                        new_parents_lon = new_parents
+                    end
+                end
+            end
+        elseif verbosity > 0
+            warn("DBNB: optimize_structure: max parents lon reached")
+        end
+        for (idx, i) in enumerate(parents_lon)
+            # remove edge if it does exist
+            if !in(features[i], forced_lon)
+                new_parents = deleteat!(copy(parents_lon), idx)
+                new_score_diff = calc_component_score(ind_lon, new_parents, binmap_lon, data, score_cache_lon) - score_lon
+                if new_score_diff > score_diff + BAYESIAN_SCORE_IMPROVEMENT_THRESOLD
+                    selected_lat = false
+                    score_diff = new_score_diff
+                    new_parents_lon = new_parents
+                end
+            end
+        end
 
         # check edge between lat <-> lon
         if !in(ind_lon, parents_lat) && !in(ind_lat, parents_lon)
