@@ -60,8 +60,6 @@ export
     export_to_text,
     print_structure,
 
-    model_adjacency_matrix,
-
     get_input_acceleration,
     get_input_turnrate,
     # infer_action_lon_from_input_acceleration,
@@ -71,7 +69,6 @@ export
     discretize_cleaned,
     drop_invalid_discretization_rows,
     convert_dataset_to_matrix,
-    feature_indeces_in_net,
     calc_bincounts_array,
 
     select_action,
@@ -130,7 +127,7 @@ function dbnmodel{R<:Real, D<:AbstractDiscretizer, F<:AbstractFeature, G<:Abstra
     DBNModel(BN, statsvec_float, features, discretizers, istarget)
 end
 function dbnmodel{R<:Real, D<:AbstractDiscretizer, F<:AbstractFeature, G<:AbstractFeature}(
-    adj::BitMatrix,
+    adj::BitMatrix, # adj[i,j] = true means i → j
     statsvec::Vector{Matrix{R}},
     discretizerdict::Dict{Symbol, D},
     targets::Vector{F},
@@ -146,7 +143,12 @@ function dbnmodel(modelstats::Dict{String, Any})
     targets    = modelstats["targets"]
     indicators = modelstats["indicators"]
     stats      = modelstats["statistics"]
-    adj        = modelstats["adjacency"]
+    adj        = modelstats["adjacency"] # adj[i,j] = true means i → j
+
+    # println("targets:    ", targets)
+    # println("indicators: ", indicators)
+    # println("adj:        ", adj)
+    # println("len(stats): ", length(stats))
 
     dbnmodel(adj, stats, discretizerdict, convert(Vector{AbstractFeature}, targets),
                         convert(Vector{AbstractFeature}, indicators))
@@ -159,12 +161,24 @@ end
 function build_bn{R<:Real, F<:AbstractFeature, G<:AbstractFeature}(
     statsvec   :: Vector{Matrix{R}},
     targets    :: Vector{F},
-    indicators :: Vector{G},
+    indicators :: Vector{G}, # technically all of the non-target indicators
     adj        :: BitMatrix
     )
 
-    bnnames = [symbol(f)::Symbol for f in [targets, indicators]]
-    @assert(length(unique(bnnames)) == length(bnnames)) # NOTE(tim): currently does not support targets also being indicators
+    @assert(size(adj,1) == size(adj,2)) # is square
+
+    n_targets = length(targets)
+    n_indicators = length(indicators)
+
+    bnnames = Array(Symbol, n_targets + n_indicators)
+    for (i,f) in enumerate(targets)
+        bnnames[i] = symbol(f)
+    end
+    for (i,f) in enumerate(indicators)
+        bnnames[i+n_targets] = symbol(f)
+    end
+
+    @assert(length(unique(bnnames)) == length(bnnames))
     n_nodes = length(bnnames)
     @assert(n_nodes == size(adj, 1) == size(adj, 2))
 
@@ -525,7 +539,7 @@ function print_structure(model::DBNModel)
     end
 end
 
-function model_adjacency_matrix(
+function construct_model_adjacency_matrix(
     net_ind_lat :: Int,
     net_ind_lon :: Int,
     net_parent_indices_lat :: Vector{Int},
@@ -876,7 +890,7 @@ type GraphLearningResult
         # 3 - pull the indeces for the parents of target_lon
 
 
-        net_feature_indeces = feature_indeces_in_net(ind_lat, ind_lon, parentinds_lat, parentinds_lon)
+        net_feature_indeces = _feature_indeces_in_net(ind_lat, ind_lon, parentinds_lat, parentinds_lon)
         net_features = features[net_feature_indeces]
         net_ind_lat = 1
         net_ind_lon = 2
@@ -884,8 +898,17 @@ type GraphLearningResult
         net_parent_indices_lon = _find_index_mapping(parentinds_lon, net_feature_indeces)
         num_net_features = length(net_feature_indeces)
 
-        adj   = model_adjacency_matrix(net_ind_lat, net_ind_lon, net_parent_indices_lat, net_parent_indices_lon, num_net_features)
+        # println("net_feature_indeces:    ", net_feature_indeces)
+        # println("net_features:           ", net_features)
+        # println("net_parent_indices_lat: ", net_parent_indices_lat)
+        # println("net_parent_indices_lon: ", net_parent_indices_lon)
+        # println("num_net_features:       ", num_net_features)
+
+        adj   = construct_model_adjacency_matrix(net_ind_lat, net_ind_lon, net_parent_indices_lat, net_parent_indices_lon, num_net_features)
         stats = convert(Vector{Matrix{Float64}}, statistics(adj, r[net_feature_indeces], d[net_feature_indeces,:]))
+
+        # println("adj: ")
+        # println(adj)
 
         target_lat = features[ind_lat]
         target_lon = features[ind_lon]
@@ -1350,7 +1373,7 @@ function _find_index_mapping{T}(original::Vector{T}, target::Vector{T})
     end
     retval
 end
-function feature_indeces_in_net(
+function _feature_indeces_in_net(
     find_lat::Int,
     find_lon::Int,
     parents_lat::Vector{Int},
@@ -1358,7 +1381,11 @@ function feature_indeces_in_net(
     )
 
     net_feature_indeces = [find_lat,find_lon]
-    append!(net_feature_indeces, sort!(unique([parents_lat, parents_lon])))
+    for p in sort!(unique([parents_lat, parents_lon]))
+        if !in(p, net_feature_indeces)
+            push!(net_feature_indeces, p)
+        end
+    end
     net_feature_indeces
 end
 
@@ -1854,123 +1881,26 @@ function optimize_structure!(
         score_diff = 0.0
 
         # check edges for indicators -> lat
-        if length(parents_lat) < max_parents
-            for i = 1 : n_indicators
-                # add edge if it does not exist
-                if !chosen_lat[i]
-                    new_parents = sort!(push!(copy(parents_lat), n_targets+i))
-                    new_score_diff = calc_component_score(ind_lat, new_parents, binmap_lat, data, score_cache_lat) - score_lat
-                    if new_score_diff > score_diff + BAYESIAN_SCORE_IMPROVEMENT_THRESOLD
-                        selected_lat = true
-                        score_diff = new_score_diff
-                        new_parents_lat = new_parents
-                    end
-                end
-            end
-        elseif verbosity > 0
-            warn("DBNB: optimize_structure: max parents lat reached")
-        end
-        for (idx, i) in enumerate(parents_lat)
-            # remove edge if it does exist
-            if !in(features[i], forced_lat)
-                new_parents = deleteat!(copy(parents_lat), idx)
-                new_score_diff = calc_component_score(ind_lat, new_parents, binmap_lat, data, score_cache_lat) - score_lat
-                if new_score_diff > score_diff + BAYESIAN_SCORE_IMPROVEMENT_THRESOLD
-                    selected_lat = true
-                    score_diff = new_score_diff
-                    new_parents_lat = new_parents
-                end
-            end
-        end
-
-        # check edges for indicators -> lon
-        if length(parents_lon) < max_parents
-            for i = 1 : n_indicators
-                # add edge if it does not exist
-                if !chosen_lon[i]
-                    new_parents = sort!(push!(copy(parents_lon), n_targets+i))
-                    new_score_diff = calc_component_score(ind_lon, new_parents, binmap_lon, data, score_cache_lon) - score_lon
-                    if new_score_diff > score_diff + BAYESIAN_SCORE_IMPROVEMENT_THRESOLD
-                        selected_lat = false
-                        score_diff = new_score_diff
-                        new_parents_lon = new_parents
-                    end
-                end
-            end
-        elseif verbosity > 0
-            warn("DBNB: optimize_structure: max parents lon reached")
-        end
-        for (idx, i) in enumerate(parents_lon)
-            # remove edge if it does exist
-            if !in(features[i], forced_lon)
-                new_parents = deleteat!(copy(parents_lon), idx)
-                new_score_diff = calc_component_score(ind_lon, new_parents, binmap_lon, data, score_cache_lon) - score_lon
-                if new_score_diff > score_diff + BAYESIAN_SCORE_IMPROVEMENT_THRESOLD
-                    selected_lat = false
-                    score_diff = new_score_diff
-                    new_parents_lon = new_parents
-                end
-            end
-        end
-
-        # check edge between lat <-> lon
-        # if !in(ind_lon, parents_lat) && !in(ind_lat, parents_lon)
-        #     # lon -> lat
-        #     if length(parents_lat) < max_parents
-        #         new_parents = unshift!(copy(parents_lat), ind_lon)
-        #         new_score_diff = calc_component_score(ind_lat, new_parents, binmap_lat, data, score_cache_lat) - score_lat
-        #         if new_score_diff > score_diff + BAYESIAN_SCORE_IMPROVEMENT_THRESOLD
-        #             selected_lat = true
-        #             score_diff = new_score_diff
-        #             new_parents_lat = new_parents
+        # if length(parents_lat) < max_parents
+        #     for i = 1 : n_indicators
+        #         # add edge if it does not exist
+        #         if !chosen_lat[i]
+        #             new_parents = sort!(push!(copy(parents_lat), n_targets+i))
+        #             new_score_diff = calc_component_score(ind_lat, new_parents, binmap_lat, data, score_cache_lat) - score_lat
+        #             if new_score_diff > score_diff + BAYESIAN_SCORE_IMPROVEMENT_THRESOLD
+        #                 selected_lat = true
+        #                 score_diff = new_score_diff
+        #                 new_parents_lat = new_parents
+        #             end
         #         end
         #     end
-
-        #     # lat -> lon
-        #     if length(parents_lon) < max_parents
-        #         new_parents = unshift!(copy(parents_lon), ind_lat)
-        #         new_score_diff = calc_component_score(ind_lon, new_parents, binmap_lon, data, score_cache_lon) - score_lon
-        #         if new_score_diff > score_diff + BAYESIAN_SCORE_IMPROVEMENT_THRESOLD
-        #             selected_lat = false
-        #             score_diff = new_score_diff
-        #             new_parents_lon = new_parents
-        #         end
-        #     end
-        # elseif in(ind_lon, parents_lat) && !in(features[ind_lon], forced_lat)
-
-        #     # try edge removal
-        #     new_parents = deleteat!(copy(parents_lat), ind_lat)
-        #     new_score_diff = calc_component_score(ind_lat, new_parents, binmap_lat, data, score_cache_lat) - score_lat
-        #     if new_score_diff > score_diff + BAYESIAN_SCORE_IMPROVEMENT_THRESOLD
-        #         selected_lat = true
-        #         score_diff = new_score_diff
-        #         new_parents_lat = new_parents
-        #     end
-
-        #     # try edge reversal (lat -> lon)
-        #     if length(parents_lon) < max_parents
-        #         new_parents = unshift!(copy(parents_lon), ind_lat)
-        #         new_score_diff = calc_component_score(ind_lon, new_parents, binmap_lon, data, score_cache_lon) - score_lon
-        #         if new_score_diff > score_diff + BAYESIAN_SCORE_IMPROVEMENT_THRESOLD
-        #             selected_lat = false
-        #             score_diff = new_score_diff
-        #             new_parents_lon = new_parents
-        #         end
-        #     end
-        # elseif in(ind_lat, parents_lon)  && !in(features[ind_lat], forced_lon)
-
-        #     # try edge removal
-        #     new_parents = deleteat!(copy(parents_lon), ind_lat)
-        #     new_score_diff = calc_component_score(ind_lon, new_parents, binmap_lon, data, score_cache_lon) - score_lon
-        #     if new_score_diff > score_diff + BAYESIAN_SCORE_IMPROVEMENT_THRESOLD
-        #         selected_lat = false
-        #         score_diff = new_score_diff
-        #         new_parents_lon = new_parents
-        #     end
-
-        #     # try edge reversal (lon -> lat)
-        #     if length(parents_lat) < max_parents
-        #         new_parents = unshift!(copy(parents_lat), ind_lon)
+        # elseif verbosity > 0
+        #     warn("DBNB: optimize_structure: max parents lat reached")
+        # end
+        # for (idx, i) in enumerate(parents_lat)
+        #     # remove edge if it does exist
+        #     if !in(features[i], forced_lat)
+        #         new_parents = deleteat!(copy(parents_lat), idx)
         #         new_score_diff = calc_component_score(ind_lat, new_parents, binmap_lat, data, score_cache_lat) - score_lat
         #         if new_score_diff > score_diff + BAYESIAN_SCORE_IMPROVEMENT_THRESOLD
         #             selected_lat = true
@@ -1979,6 +1909,103 @@ function optimize_structure!(
         #         end
         #     end
         # end
+
+        # check edges for indicators -> lon
+        # if length(parents_lon) < max_parents
+        #     for i = 1 : n_indicators
+        #         # add edge if it does not exist
+        #         if !chosen_lon[i]
+        #             new_parents = sort!(push!(copy(parents_lon), n_targets+i))
+        #             new_score_diff = calc_component_score(ind_lon, new_parents, binmap_lon, data, score_cache_lon) - score_lon
+        #             if new_score_diff > score_diff + BAYESIAN_SCORE_IMPROVEMENT_THRESOLD
+        #                 selected_lat = false
+        #                 score_diff = new_score_diff
+        #                 new_parents_lon = new_parents
+        #             end
+        #         end
+        #     end
+        # elseif verbosity > 0
+        #     warn("DBNB: optimize_structure: max parents lon reached")
+        # end
+        # for (idx, i) in enumerate(parents_lon)
+        #     # remove edge if it does exist
+        #     if !in(features[i], forced_lon)
+        #         new_parents = deleteat!(copy(parents_lon), idx)
+        #         new_score_diff = calc_component_score(ind_lon, new_parents, binmap_lon, data, score_cache_lon) - score_lon
+        #         if new_score_diff > score_diff + BAYESIAN_SCORE_IMPROVEMENT_THRESOLD
+        #             selected_lat = false
+        #             score_diff = new_score_diff
+        #             new_parents_lon = new_parents
+        #         end
+        #     end
+        # end
+
+        # check edge between lat <-> lon
+        if !in(ind_lon, parents_lat) && !in(ind_lat, parents_lon)
+            # lon -> lat
+            if length(parents_lat) < max_parents
+                new_parents = unshift!(copy(parents_lat), ind_lon)
+                new_score_diff = calc_component_score(ind_lat, new_parents, binmap_lat, data, score_cache_lat) - score_lat
+                if new_score_diff > score_diff + BAYESIAN_SCORE_IMPROVEMENT_THRESOLD
+                    selected_lat = true
+                    score_diff = new_score_diff
+                    new_parents_lat = new_parents
+                end
+            end
+
+            # lat -> lon
+            if length(parents_lon) < max_parents
+                new_parents = unshift!(copy(parents_lon), ind_lat)
+                new_score_diff = calc_component_score(ind_lon, new_parents, binmap_lon, data, score_cache_lon) - score_lon
+                if new_score_diff > score_diff + BAYESIAN_SCORE_IMPROVEMENT_THRESOLD
+                    selected_lat = false
+                    score_diff = new_score_diff
+                    new_parents_lon = new_parents
+                end
+            end
+        elseif in(ind_lon, parents_lat) && !in(features[ind_lon], forced_lat)
+
+            # try edge removal
+            new_parents = deleteat!(copy(parents_lat), ind_lat)
+            new_score_diff = calc_component_score(ind_lat, new_parents, binmap_lat, data, score_cache_lat) - score_lat
+            if new_score_diff > score_diff + BAYESIAN_SCORE_IMPROVEMENT_THRESOLD
+                selected_lat = true
+                score_diff = new_score_diff
+                new_parents_lat = new_parents
+            end
+
+            # try edge reversal (lat -> lon)
+            if length(parents_lon) < max_parents
+                new_parents = unshift!(copy(parents_lon), ind_lat)
+                new_score_diff = calc_component_score(ind_lon, new_parents, binmap_lon, data, score_cache_lon) - score_lon
+                if new_score_diff > score_diff + BAYESIAN_SCORE_IMPROVEMENT_THRESOLD
+                    selected_lat = false
+                    score_diff = new_score_diff
+                    new_parents_lon = new_parents
+                end
+            end
+        elseif in(ind_lat, parents_lon)  && !in(features[ind_lat], forced_lon)
+
+            # try edge removal
+            new_parents = deleteat!(copy(parents_lon), ind_lat)
+            new_score_diff = calc_component_score(ind_lon, new_parents, binmap_lon, data, score_cache_lon) - score_lon
+            if new_score_diff > score_diff + BAYESIAN_SCORE_IMPROVEMENT_THRESOLD
+                selected_lat = false
+                score_diff = new_score_diff
+                new_parents_lon = new_parents
+            end
+
+            # try edge reversal (lon -> lat)
+            if length(parents_lat) < max_parents
+                new_parents = unshift!(copy(parents_lat), ind_lon)
+                new_score_diff = calc_component_score(ind_lat, new_parents, binmap_lat, data, score_cache_lat) - score_lat
+                if new_score_diff > score_diff + BAYESIAN_SCORE_IMPROVEMENT_THRESOLD
+                    selected_lat = true
+                    score_diff = new_score_diff
+                    new_parents_lat = new_parents
+                end
+            end
+        end
 
         # select best
         if score_diff > 0.0
