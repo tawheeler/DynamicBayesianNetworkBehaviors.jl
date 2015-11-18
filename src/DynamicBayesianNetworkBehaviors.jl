@@ -8,8 +8,9 @@ using SmileExtra
 
 import Graphs: topological_sort_by_dfs, in_neighbors, num_vertices, num_edges
 import Discretizers: encode
-import AutomotiveDrivingModels: ModelTargets, AbstractVehicleBehavior, select_action, calc_action_loglikelihood,
-                                train, observe, _reverse_smoothing_sequential_moving_average
+import AutomotiveDrivingModels: ModelTargets, AbstractVehicleBehavior, VehicleBehaviorPreallocatedData,
+                                select_action, calc_action_loglikelihood,
+                                train, observe, _reverse_smoothing_sequential_moving_average, is_in_fold
 
 export
     DBNModel,
@@ -17,6 +18,7 @@ export
     DBNSimParams,
     GraphLearningResult,
     ParentFeatures,
+    ModelPreallocatedData,
 
     DEFAULT_INDICATORS,
     DEFAULT_DISCRETIZERS,
@@ -934,14 +936,38 @@ immutable ModelStaticParams
     features::Vector{AbstractFeature}
 end
 immutable ModelData
-    continuous::Matrix{Float64} # NOTE(tim): this should never change
-    discrete::Matrix{Int} # this should be overwritten as the discretization params change
-    bincounts::Vector{Int} # this should be overwritten as the discretization params change
+    continuous::Matrix{Float64} # [nfeatures×nsamples] never overwritten
+    discrete::Matrix{Int}       # [nfeatures×nsamples] is overwritten as the discretization params change
+    bincounts::Vector{Int}      # [nfeatures]          is overwritten as the discretization params change
 
     function ModelData(continuous::Matrix{Float64}, modelparams::ModelParams, features)
         d = discretize(modelparams.binmaps, continuous, features)
         r = calc_bincounts_array(modelparams.binmaps)
         new(continuous, d, r)
+    end
+end
+
+type ModelPreallocatedData <: VehicleBehaviorPreallocatedData
+    #=
+    Allocates the full size of continuous and discrete corresponding to the full dataset
+    It then copies data into it based on the given fold assignment
+    =#
+
+    continuous::Matrix{Float64} # [nsamples×nfeatures]
+    discrete::Matrix{Int}       # [nsamples×nfeatures]
+    bincounts::Vector{Int}      # [nfeatures]
+    rowcount::Int               # number of populated entries
+
+    function ModelPreallocatedData(dset::ModelTrainingData, args::Dict{Symbol,Any})
+        nsamples = nrow(dset)
+
+        nfeatures = length(get(args,:indicators,DEFAULT_INDICATORS)) + 2
+
+        continuous = Array(Float64, nsamples, features)
+        discrete = Array(Int, nsamples, features)
+        bincounts = Array(Int, nfeatures)
+        rowcount = 0
+        new(continuous, discrete, bincounts, rowcount)
     end
 end
 
@@ -1274,29 +1300,6 @@ end
 function drop_invalid_discretization_rows{D<:AbstractDiscretizer, F<:AbstractFeature}(
     binmaps  :: Dict{Symbol, D},
     features :: Vector{F},
-    data     :: DataFrame
-    )
-
-    m = size(data, 1)
-    is_valid = trues(m)
-    for i = 1 : m
-        for (j,f) in enumerate(features)
-            sym = symbol(f)
-            value  = data[i, sym]
-            dmap = binmaps[sym]
-            @assert(!isna(value))
-            if !supports_encoding(dmap, value)
-                is_valid[i] = false
-                break
-            end
-        end
-    end
-
-    data[is_valid, :]
-end
-function drop_invalid_discretization_rows{D<:AbstractDiscretizer, F<:AbstractFeature}(
-    binmaps  :: Dict{Symbol, D},
-    features :: Vector{F},
     target_indeces :: Vector{Int}, # these cannot be Inf
     data     :: DataFrame
     )
@@ -1326,14 +1329,14 @@ function convert_dataset_to_matrix{F<:AbstractFeature}(
     features::Vector{F}
     )
 
-    # creates a Matrix{Float64} which is nfeatures × nrows
+    # creates a Matrix{Float64} which is nfeatures × nsamples
     # rows are ordered in the same order as the features vector
 
-    nrows = nrow(dataframe)
+    nsamples = nrow(dataframe)
     nfeatures = length(features)
 
-    mat = Array(Float64, nfeatures, nrows)
-    for j = 1 : nrows
+    mat = Array(Float64, nfeatures, nsamples)
+    for j = 1 : nsamples
         for (i,f) in enumerate(features)
             sym = symbol(f)
             mat[i,j] = dataframe[j,sym]
@@ -1682,6 +1685,95 @@ function calc_categorical_score(
 
     logl
 end
+function SmileExtra.statistics(
+    targetind::Int,
+    parents::AbstractVector{Int},
+    data::ModelPreallocatedData,
+    )
+
+    bincounts = data.bincounts
+    discrete_data = data.discrete
+    rowcount = data.rowcount
+
+    q = 1
+    if !isempty(parents)
+        Np = length(parents)
+        q  = prod(bincounts[parents])
+        stridevec = fill(1, Np)
+        for k = 2:Np
+            stridevec[k] = stridevec[k-1] * bincounts[parents[k-1]]
+        end
+        js = (discrete_data[1:rowcount,parents] - 1) * stridevec + 1
+    else
+        js = fill(1, rowcount)
+    end
+
+    full(sparse(vec(discrete_data[1:rowcount,targetind]), vec(js), 1, bincounts[targetind], q))
+end
+function SmileExtra.log_bayes_score_component{I<:Integer}(
+    i::Int,
+    parents::AbstractVector{I},
+    data::ModelPreallocatedData,
+    )
+
+    #=
+    Computes the bayesian score component for the given target variable index
+        This assumes a unit dirichlet prior (alpha)
+
+    INPUT:
+        i       - index of the target variable
+        parents - list of indeces of parent variables (should not contain self)
+        data    - will use data.discrete and data.bincounts
+
+    OUTPUT:
+        the log bayesian score, Float64
+    =#
+
+    r = data.bincounts
+    d = data.discrete
+    rowcount = data.rowcount
+
+    #=
+        r       - list of instantiation counts accessed by variable index
+                  r[1] gives number of discrete states variable 1 can take on
+        d       - matrix of sample counts
+                  d[k,j] gives the number of times the target variable took on its kth instantiation
+                  given the jth parental instantiation
+                  NOTE: that is the opposite convention (transpose) of the original log_bayes_score_component function!
+                  NOTE: that we only use the first 'data.rowcount' samples!
+    =#
+
+    alpha = fill(1, r[i], isempty(parents) ? 1 : prod(r[parents]))
+
+    nfeatures = size(d,2)
+
+    if !isempty(parents)
+        Np = length(parents)
+        stridevec = fill(1, Np)
+        for k = 2:Np
+            stridevec[k] = stridevec[k-1] * r[parents[k-1]]
+        end
+        js = (d[1:rowcount,parents] - 1) * stridevec + 1
+    else
+        js = fill(1, rowcount)
+    end
+
+    N = sparse(vec(d[1:rowcount,i]), vec(js), 1, size(alpha)...) # note: duplicates are added together
+
+    return sum(lgamma(alpha + N)) - sum(lgamma(alpha)) + sum(lgamma(sum(alpha,1))) - sum(lgamma(sum(alpha,1) + sum(N,1)))::Float64
+end
+function SmileExtra.log_bayes_score_component{I<:Integer}(
+    i::Int,
+    parents::AbstractVector{I},
+    data::ModelPreallocatedData,
+    cache::Dict{Vector{Int}, Float64}
+    )
+
+    if haskey(cache, parents)
+        return cache[parents]
+    end
+    return (cache[parents] = log_bayes_score_component(i, parents, data))
+end
 function calc_bayesian_score(
     data::ModelData,
     modelparams::ModelParams,
@@ -1692,6 +1784,17 @@ function calc_bayesian_score(
 
     log_bayes_score_component(staticparams.ind_lat, modelparams.parents_lat, data.bincounts, data.discrete) +
         log_bayes_score_component(staticparams.ind_lon, modelparams.parents_lon, data.bincounts, data.discrete)
+end
+function calc_bayesian_score(
+    data::ModelPreallocatedData,
+    modelparams::ModelParams,
+    staticparams::ModelStaticParams
+    )
+
+    # NOTE: this does not compute the score components for the indicator variables
+
+    log_bayes_score_component(staticparams.ind_lat, modelparams.parents_lat, data) +
+        log_bayes_score_component(staticparams.ind_lon, modelparams.parents_lon, data)
 end
 function calc_discretize_score(
     binmap::AbstractDiscretizer,
@@ -1756,6 +1859,26 @@ function calc_discretize_score(
 
     score
 end
+function calc_discretize_score(
+    data::ModelPreallocatedData,
+    modelparams::ModelParams,
+    staticparams::ModelStaticParams
+    )
+
+    score = 0.0
+
+    binmap = modelparams.binmaps[staticparams.ind_lat]
+    stats = SmileExtra.statistics(staticparams.ind_lat, modelparams.parents_lat, data)
+    score += calc_discretize_score(binmap, stats)
+    @assert(!isinf(score))
+
+    binmap = modelparams.binmaps[staticparams.ind_lon]
+    stats = SmileExtra.statistics(staticparams.ind_lon, modelparams.parents_lon, data)
+    score += calc_discretize_score(binmap, stats)
+    @assert(!isinf(score))
+
+    score
+end
 function calc_component_score(
     target_index::Int,
     target_parents::Vector{Int},
@@ -1767,6 +1890,17 @@ function calc_component_score(
     calc_discretize_score(target_binmap, stats) +
         log_bayes_score_component(target_index, target_parents,
                                   data.bincounts, data.discrete)
+end
+function calc_component_score(
+    target_index::Int,
+    target_parents::Vector{Int},
+    target_binmap::AbstractDiscretizer,
+    data::ModelPreallocatedData,
+    stats::AbstractMatrix{Int}
+    )
+
+    calc_discretize_score(target_binmap, stats) +
+        log_bayes_score_component(target_index, target_parents, data)
 end
 function calc_component_score(
     target_index::Int,
@@ -1784,6 +1918,16 @@ function calc_component_score(
     target_index::Int,
     target_parents::Vector{Int},
     target_binmap::AbstractDiscretizer,
+    data::ModelPreallocatedData
+    )
+
+    stats = statistics(target_index, target_parents, data)
+    calc_component_score(target_index, target_parents, target_binmap, data, stats)
+end
+function calc_component_score(
+    target_index::Int,
+    target_parents::Vector{Int},
+    target_binmap::AbstractDiscretizer,
     data::ModelData,
     score_cache::Dict{Vector{Int}, Float64}
     )
@@ -1795,8 +1939,34 @@ function calc_component_score(
         log_bayes_score_component(target_index, target_parents,
                                   data.bincounts, data.discrete, score_cache)
 end
+function calc_component_score(
+    target_index::Int,
+    target_parents::Vector{Int},
+    target_binmap::AbstractDiscretizer,
+    data::ModelPreallocatedData,
+    score_cache::Dict{Vector{Int}, Float64}
+    )
+
+    stats = SmileExtra.statistics(target_index, target_parents, data)
+    calc_discretize_score(target_binmap, stats) +
+        log_bayes_score_component(target_index, target_parents, data, score_cache)
+end
 function calc_complete_score(
     data::ModelData,
+    modelparams::ModelParams,
+    staticparams::ModelStaticParams
+    )
+
+    bayesian_score = calc_bayesian_score(data, modelparams, staticparams)
+    discretize_score = calc_discretize_score(data, modelparams, staticparams)
+
+    @assert(!isinf(bayesian_score))
+    @assert(!isinf(discretize_score))
+
+    bayesian_score + discretize_score
+end
+function calc_complete_score(
+    data::ModelPreallocatedData,
     modelparams::ModelParams,
     staticparams::ModelStaticParams
     )
@@ -1832,7 +2002,7 @@ end
 function optimize_structure!(
     modelparams::ModelParams,
     staticparams::ModelStaticParams,
-    data::ModelData;
+    data::Union(ModelData, ModelPreallocatedData);
     forced::(Vector{Int}, Vector{Int})=(Int[], Int[]), # lat, lon
     verbosity::Integer=0,
     max_parents::Integer=6
@@ -2041,7 +2211,7 @@ end
 function optimize_target_bins!(
     modelparams::ModelParams,
     staticparams::ModelStaticParams,
-    data::ModelData
+    data::Union(ModelData, ModelPreallocatedData),
     )
 
     binmaps = modelparams.binmaps
@@ -2125,7 +2295,7 @@ function optimize_indicator_bins!(
     index::Int,
     modelparams::ModelParams,
     staticparams::ModelStaticParams,
-    data::ModelData
+    data::Union(ModelData, ModelPreallocatedData),
     )
 
     nothing
@@ -2170,6 +2340,112 @@ function optimize_indicator_bins!(
 
         # rediscretize
         data.discrete[index,:] = encode(binmap, data.continuous[index,:])
+
+        nothing
+    end
+    function optimization_objective_both_parents(x::Vector, grad::Vector)
+        if length(grad) > 0
+            # do nothing - this is Nonlinear
+            warn("TRYING TO COMPUTE GRADIENT!")
+        end
+
+        overwrite_model_params!(x)
+
+        score = calc_component_score(ind_lat, parents_lat, binmap_lat, data) +
+                calc_component_score(ind_lon, parents_lon, binmap_lon, data)
+
+        score
+    end
+    function optimization_objective_lat(x::Vector, grad::Vector)
+        if length(grad) > 0
+            # do nothing - this is Nonlinear
+            warn("TRYING TO COMPUTE GRADIENT!")
+        end
+
+        overwrite_model_params!(x)
+
+        calc_component_score(ind_lat, parents_lat, binmap_lat, data)
+    end
+    function optimization_objective_lon(x::Vector, grad::Vector)
+        if length(grad) > 0
+            # do nothing - this is Nonlinear
+            warn("TRYING TO COMPUTE GRADIENT!")
+        end
+
+        overwrite_model_params!(x)
+
+        calc_component_score(ind_lon, parents_lon, binmap_lon, data)
+    end
+
+    n = length(starting_opt_vector)
+    opt = Opt(NLOPT_SOLVER, n)
+    xtol_rel!(opt, NLOPT_XTOL_REL)
+    lower_bounds!(opt, zeros(Float64, n))
+    upper_bounds!(opt, ones(Float64, n))
+
+    in_lat = in(index, parents_lat)
+    in_lon = in(index, parents_lon)
+    if in_lat && in_lon
+        max_objective!(opt, optimization_objective_both_parents)
+    elseif in_lat
+        max_objective!(opt, optimization_objective_lat)
+    elseif in_lon
+        max_objective!(opt, optimization_objective_lon)
+    else
+        error("target is not an indicator variable")
+    end
+
+    # enforce ordering of bins, f(x,g) ≤ 0
+    # for i = 1 : nbins-2
+    #     inequality_constraint!(opt, (x,g) -> x[i] - x[i+1])
+    # end
+
+    maxf, maxx, ret = optimize(opt, starting_opt_vector)
+
+    overwrite_model_params!(maxx)
+end
+function optimize_indicator_bins!(
+    binmap::LinearDiscretizer,
+    index::Int,
+    modelparams::ModelParams,
+    staticparams::ModelStaticParams,
+    data::ModelPreallocatedData
+    )
+
+    nbins = nlabels(binmap)
+    if nbins ≤ 1
+        return nothing
+    end
+
+    bin_lo, bin_hi = extrema(binmap)
+
+    binmaps = modelparams.binmaps
+    ind_lat = staticparams.ind_lat
+    ind_lon = staticparams.ind_lon
+    parents_lat = modelparams.parents_lat
+    parents_lon = modelparams.parents_lon
+    binmap_lat = modelparams.binmaps[ind_lat]
+    binmap_lon = modelparams.binmaps[ind_lon]
+    nbins_lat = nlabels(binmap_lat)
+    nbins_lon = nlabels(binmap_lon)
+
+    starting_opt_vector = bins_actual_to_unit_range(binmap.binedges[2:nbins], bin_lo, bin_hi)
+
+    function overwrite_model_params!(x::Vector; ε::Float64=eps(Float64))
+        # override binedges
+        bin_edges = bins_unit_range_to_actual(x, bin_lo, bin_hi)
+
+        for i in 1 : nbins-1
+            binmap.binedges[i+1] = max(bin_edges[i], binmap.binedges[i] + ε)
+        end
+        for i in nbins : -1 : 2
+            binmap.binedges[i] = min(binmap.binedges[i], binmap.binedges[i+1]-ε)
+        end
+
+        # rediscretize
+        for i in 1 : data.rowcount
+            data.discrete[i,index] = encode(binmap, data.continuous[i,index])
+        end
 
         nothing
     end
@@ -2341,6 +2617,115 @@ function optimize_indicator_bins!(
 
     overwrite_model_params!(maxx)
 end
+function optimize_indicator_bins!(
+    binmap::HybridDiscretizer,
+    index::Int,
+    modelparams::ModelParams,
+    staticparams::ModelStaticParams,
+    data::ModelPreallocatedData
+    )
+
+
+
+    lin = binmap.lin
+    nbins = nlabels(lin)
+    if nbins ≤ 1
+        return nothing
+    end
+
+    bin_lo, bin_hi = extrema(lin)
+    binmaps = modelparams.binmaps
+    ind_lat = staticparams.ind_lat
+    ind_lon = staticparams.ind_lon
+    parents_lat = modelparams.parents_lat
+    parents_lon = modelparams.parents_lon
+    binmap_lat = modelparams.binmaps[ind_lat]
+    binmap_lon = modelparams.binmaps[ind_lon]
+    nbins_lat = nlabels(binmap_lat)
+    nbins_lon = nlabels(binmap_lon)
+
+    starting_opt_vector = bins_actual_to_unit_range(lin.binedges[2:nbins], bin_lo, bin_hi)
+
+    function overwrite_model_params!(x::Vector; ε::Float64=eps(Float64))
+        # override binedges
+        bin_edges = bins_unit_range_to_actual(x, bin_lo, bin_hi)
+
+
+        for i = 1 : nbins-1
+            lin.binedges[i+1] = max(bin_edges[i], lin.bin_edges[i] + ε)
+        end
+        for i = nbins : -1 : 2
+            lin.binedges[i] = min(lin.bin_edges[i], lin.bin_edges[i+1]-ε)
+        end
+
+        # rediscretize
+        for i in 1 : data.rowcount
+            data.discrete[i,index] = encode(binmap, data.continuous[i,index])
+        end
+
+        nothing
+    end
+    function optimization_objective_both_parents(x::Vector, grad::Vector)
+        if length(grad) > 0
+            # do nothing - this is Nonlinear
+            warn("TRYING TO COMPUTE GRADIENT!")
+        end
+
+        overwrite_model_params!(x)
+
+        score = calc_component_score(ind_lat, parents_lat, binmap_lat, data) +
+                calc_component_score(ind_lon, parents_lon, binmap_lon, data)
+
+        score
+    end
+    function optimization_objective_lat(x::Vector, grad::Vector)
+        if length(grad) > 0
+            # do nothing - this is Nonlinear
+            warn("TRYING TO COMPUTE GRADIENT!")
+        end
+
+        overwrite_model_params!(x)
+
+        calc_component_score(ind_lat, parents_lat, binmap_lat, data)
+    end
+    function optimization_objective_lon(x::Vector, grad::Vector)
+        if length(grad) > 0
+            # do nothing - this is Nonlinear
+            warn("TRYING TO COMPUTE GRADIENT!")
+        end
+
+        overwrite_model_params!(x)
+
+        calc_component_score(ind_lon, parents_lon, binmap_lon, data)
+    end
+
+    n = length(starting_opt_vector)
+    opt = Opt(NLOPT_SOLVER, n)
+    xtol_rel!(opt, NLOPT_XTOL_REL)
+    lower_bounds!(opt, zeros(Float64, n))
+    upper_bounds!(opt, ones(Float64, n))
+
+    in_lat = in(index, parents_lat)
+    in_lon = in(index, parents_lon)
+    if in_lat && in_lon
+        max_objective!(opt, optimization_objective_both_parents)
+    elseif in_lat
+        max_objective!(opt, optimization_objective_lat)
+    elseif in_lon
+        max_objective!(opt, optimization_objective_lon)
+    else
+        error("target is not an indicator variable")
+    end
+
+    # enforce ordering of bins, f(x,g) ≤ 0
+    # for i = 1 : nbins-2
+    #     inequality_constraint!(opt, (x,g) -> x[i] - x[i+1])
+    # end
+
+    maxf, maxx, ret = optimize(opt, starting_opt_vector)
+
+    overwrite_model_params!(maxx)
+end
 function optimize_parent_bins!(
     modelparams::ModelParams,
     staticparams::ModelStaticParams,
@@ -2443,7 +2828,10 @@ function train(::Type{DynamicBayesianNetworkBehavior}, trainingframes::DataFrame
         ###################
         # lat
 
-        datavec[:] = continuous_data[ind_lat,:]
+        for j in 1 : length(datavec)
+            datavec[j] = continuous_data[ind_lat,j]
+        end
+
         disc::LinearDiscretizer = modelparams.binmaps[ind_lat]
         extremes = (disc.binedges[1], disc.binedges[end])
         nbins = nlabels(disc)
@@ -2456,12 +2844,15 @@ function train(::Type{DynamicBayesianNetworkBehavior}, trainingframes::DataFrame
         for (i,x) in enumerate(datavec)
             @assert(extremes[1] ≤ x ≤ extremes[2])
         end
-        disc.binedges[:] = optimize_categorical_binning!(datavec, nbins, extremes, ncandidate_bins)
+        copy!(disc.binedges, optimize_categorical_binning!(datavec, nbins, extremes, ncandidate_bins))
 
         ###################
         # lon
 
-        datavec[:] = continuous_data[ind_lon,:]
+        for j in 1 : length(datavec)
+            datavec[j] = continuous_data[ind_lon,j]
+        end
+
         disc = modelparams.binmaps[ind_lon]::LinearDiscretizer
         extremes = (disc.binedges[1], disc.binedges[end])
         nbins = nlabels(disc)
@@ -2477,7 +2868,7 @@ function train(::Type{DynamicBayesianNetworkBehavior}, trainingframes::DataFrame
             end
             @assert(extremes[1] ≤ x ≤ extremes[2])
         end
-        disc.binedges[:] = optimize_categorical_binning!(datavec, nbins, extremes, ncandidate_bins)
+        copy!(disc.binedges, optimize_categorical_binning!(datavec, nbins, extremes, ncandidate_bins))
 
         if verbosity > 0
             toc()
@@ -2491,19 +2882,28 @@ function train(::Type{DynamicBayesianNetworkBehavior}, trainingframes::DataFrame
             println("Optimizing Indicator Bins"); tic()
         end
 
-        for i in 3:length(features)
+        for i in 3 : length(features)
             # println(symbol(staticparams.features[i]), "  ", typeof(modelparams.binmaps[i]))
             disc2 = modelparams.binmaps[i]
             if isa(disc2, LinearDiscretizer)
-                datavec[:] = continuous_data[i,:]
+
+                for j in 1 : length(datavec)
+                    datavec[j] = continuous_data[i,j]
+                end
+
                 nbins = nlabels(disc2)
                 extremes = (disc2.binedges[1], disc2.binedges[end])
                 for (k,x) in enumerate(datavec)
                     datavec[k] = clamp(x, extremes[1], extremes[2])
                 end
-                disc2.binedges[:] = optimize_categorical_binning!(datavec, nbins, extremes, ncandidate_bins)
+                copy!(disc2.binedges, optimize_categorical_binning!(datavec, nbins, extremes, ncandidate_bins))
+
             elseif isa(disc2, HybridDiscretizer)
-                datavec[:] = continuous_data[i,:]
+
+                for j in 1 : length(datavec)
+                    datavec[j] = continuous_data[i,j]
+                end
+
                 sort!(datavec)
                 k = findfirst(value->isinf(value) || isnan(value), datavec)
                 if k != 1 # skip if the entire array is Inf (such as if we only have freeflow data, d_x_front will be all Inf)
@@ -2517,7 +2917,7 @@ function train(::Type{DynamicBayesianNetworkBehavior}, trainingframes::DataFrame
                     for j in 1 : k
                         datavec[j] = clamp(datavec[j], extremes[1], extremes[2])
                     end
-                    disc2.lin.binedges[:] = optimize_categorical_binning!(datavec[1:k], nbins, extremes, ncandidate_bins)
+                    copy!(disc2.lin.binedges, optimize_categorical_binning!(datavec[1:k], nbins, extremes, ncandidate_bins))
                 # else
                 #     is_indicator_valid[i] = false
                 end
@@ -2595,6 +2995,302 @@ function train(::Type{DynamicBayesianNetworkBehavior}, trainingframes::DataFrame
     res = GraphLearningResult("trained", staticparams.features, staticparams.ind_lat, staticparams.ind_lon,
                               modelparams.parents_lat, modelparams.parents_lon, NaN,
                               data.bincounts, data.discrete)
+    model = dbnmodel(get_emstats(res, binmapdict))
+
+    DynamicBayesianNetworkBehavior(model, DBNSimParams(), DBNSimParams())
+end
+function train(
+    ::Type{DynamicBayesianNetworkBehavior},
+    training_data::ModelTrainingData,
+    fold::Int,
+    fold_assignment::FoldAssignment,
+    match_fold::Bool,
+    preallocated_data::ModelPreallocatedData;
+
+    starting_structure::ParentFeatures=ParentFeatures(),
+    forced::ParentFeatures=ParentFeatures(),
+    targetset::ModelTargets=ModelTargets(FUTUREDESIREDANGLE_250MS, FUTUREACCELERATION_250MS),
+    indicators::Vector{AbstractFeature}=copy(DEFAULT_INDICATORS),
+    discretizerdict::Dict{Symbol, AbstractDiscretizer}=deepcopy(DEFAULT_DISCRETIZERS),
+    ncandidate_bins::Int=20,
+    verbosity::Int=0,
+    preoptimize_target_bins::Bool=true,
+    preoptimize_indicator_bins::Bool=true,
+    optimize_structure::Bool=true,
+    optimize_target_bins::Bool=true,
+    optimize_parent_bins::Bool=true,
+    max_parents::Int=6,
+    args::Dict=Dict{Symbol,Any}()
+    )
+
+    nbins_lat = -1
+    nbins_lon = -1
+    for (k,v) in args
+        if k == :starting_structure
+            starting_structure = v
+        elseif k == :forced
+            forced = v
+        elseif k == :targetset
+            targetset = v
+        elseif k == :indicators
+            indicators = copy(v)
+        elseif k == :discretizerdict
+            discretizerdict = v
+        elseif k == :verbosity
+            verbosity = v
+        elseif k == :preoptimize_target_bins
+            preoptimize_target_bins = v
+        elseif k == :preoptimize_parent_bins || k == :preoptimize_indicator_bins
+            preoptimize_indicator_bins = v
+        elseif k == :optimize_structure
+            optimize_structure = v
+        elseif k == :optimize_target_bins
+            optimize_target_bins = v
+        elseif k == :optimize_parent_bins
+            optimize_parent_bins = v
+        elseif k == :ncandidate_bins
+            ncandidate_bins = v
+        elseif k == :nbins_lat
+            nbins_lat = v
+        elseif k == :nbins_lon
+            nbins_lon = v
+        elseif k == :max_parents
+            max_parents = v
+        else
+            warn("Train DynamicBayesianNetworkBehavior: ignoring $k")
+        end
+    end
+
+    targets = [targetset.lat, targetset.lon]
+    features = [targets, indicators]
+
+    ind_lat, ind_lon = find_target_indeces(targetset, features)
+    parents_lat, parents_lon = get_parent_indeces(starting_structure, features)
+    forced_lat, forced_lon = get_parent_indeces(forced, features)
+
+    parents_lat = sort(unique([parents_lat, forced_lat]))
+    parents_lon = sort(unique([parents_lon, forced_lon]))
+
+    modelparams = ModelParams(map(f->discretizerdict[symbol(f)], features), parents_lat, parents_lon)
+    staticparams = ModelStaticParams(ind_lat, ind_lon, features)
+
+    ############################################################
+    # pull the dataset
+    #  - drop invalid discretization rows
+    #  - check that everything is within the folds
+
+    @assert(length(fold_assignment.frame_assignment) == nrow(training_data.dataframe))
+
+    rowcount = 0
+    for (i,a) in enumerate(fold_assignment.frame_assignment)
+        if is_in_fold(fold, a, match_fold)
+            rowcount += 1
+            for (j,f) in enumerate(features)
+                sym = symbol(f)
+                dmap = binmaps[sym]
+                value = training_data.dataframe[i, sym]::Float64
+                @assert(!isnan(value))
+                if supports_encoding(dmap, value) &&
+                 !(isinf(value) && (j == ind_lat || j == ind_lon))
+                    preallocated_data.continuous[rowcount, j] = value
+                else
+                    rowcount -= 1
+                    break
+                end
+            end
+        end
+    end
+    preallocated_data.rowcount = rowcount
+
+    ############################################################
+
+    datavec = Array(Float64, rowcount)
+    if preoptimize_target_bins
+        if verbosity > 0
+            println("Optimizing Target Bins"); tic()
+        end
+
+        ###################
+        # lat
+
+        for i in 1 : rowcount
+            datavec[i] = preallocated_data.continuous[i,ind_lat]
+        end
+
+        disc::LinearDiscretizer = modelparams.binmaps[ind_lat]
+        extremes = (disc.binedges[1], disc.binedges[end])
+        nbins = nlabels(disc)
+        if nbins_lat != -1
+            nbins = nbins_lat
+            disc = LinearDiscretizer(linspace(extremes[1], extremes[2], nbins+1))
+            modelparams.binmaps[ind_lat] = disc
+        end
+
+        for (i,x) in enumerate(datavec)
+            @assert(extremes[1] ≤ x ≤ extremes[2])
+        end
+        copy!(disc.binedges, optimize_categorical_binning!(datavec, nbins, extremes, ncandidate_bins))
+
+        ###################
+        # lon
+
+        for i in 1 : rowcount
+            datavec[i] = preallocated_data.continuous[i,ind_lon]
+        end
+
+        disc = modelparams.binmaps[ind_lon]::LinearDiscretizer
+        extremes = (disc.binedges[1], disc.binedges[end])
+        nbins = nlabels(disc)
+        if nbins_lon != -1
+            nbins = nbins_lon
+            disc = LinearDiscretizer(linspace(extremes[1], extremes[2], nbins+1))
+            modelparams.binmaps[ind_lon] = disc
+        end
+
+        for (i,x) in enumerate(datavec)
+            if !(extremes[1] ≤ x ≤ extremes[2])
+                println(extremes[1], " ≤ ", x, " ≤ ", extremes[2])
+            end
+            @assert(extremes[1] ≤ x ≤ extremes[2])
+        end
+        copy!(disc.binedges, optimize_categorical_binning!(datavec, nbins, extremes, ncandidate_bins))
+
+        if verbosity > 0
+            toc()
+        end
+    end
+
+    # is_indicator_valid = trues(length(indicators))
+    if preoptimize_indicator_bins
+
+        if verbosity > 0
+            println("Optimizing Indicator Bins"); tic()
+        end
+
+        for i in 3 : length(features) # skip the target features
+            # println(symbol(staticparams.features[i]), "  ", typeof(modelparams.binmaps[i]))
+            disc2 = modelparams.binmaps[i]
+            if isa(disc2, LinearDiscretizer)
+
+                for j in 1 : rowcount
+                    datavec[j] = preallocated_data.continuous[j,ind_lon]
+                end
+
+                nbins = nlabels(disc2)
+                extremes = (disc2.binedges[1], disc2.binedges[end])
+                for (k,x) in enumerate(datavec)
+                    datavec[k] = clamp(x, extremes[1], extremes[2])
+                end
+                copy!(disc2.binedges, optimize_categorical_binning!(datavec, nbins, extremes, ncandidate_bins))
+
+            elseif isa(disc2, HybridDiscretizer)
+
+                for j in 1 : rowcount
+                    datavec[j] = preallocated_data.continuous[j,ind_lon]
+                end
+
+                sort!(datavec)
+                k = findfirst(value->isinf(value) || isnan(value), datavec)
+                if k != 1 # skip if the entire array is Inf (such as if we only have freeflow data, d_x_front will be all Inf)
+                    if k == 0
+                        k = length(datavec)
+                    else
+                        k -= 1
+                    end
+                    nbins = nlabels(disc2.lin)
+                    extremes = (disc2.lin.binedges[1], disc2.lin.binedges[end])
+                    for j in 1 : k
+                        datavec[j] = clamp(datavec[j], extremes[1], extremes[2])
+                    end
+                    copy!(disc2.lin.binedges, optimize_categorical_binning!(datavec[1:k], nbins, extremes, ncandidate_bins))
+                # else
+                #     is_indicator_valid[i] = false
+                end
+            end
+        end
+
+        if verbosity > 0
+            toc()
+        end
+    end
+
+    ############################################################################
+    # Discretize preallocated_data.continuous → preallocated_data.discrete
+    # Compute bincounts
+
+    for (j,dmap) in enumerate(modelparams.binmaps)
+        preallocated_data.bincounts[j] = nlabels(dmap)
+        for i in 1 : preallocated_data.rowcount
+            value = preallocated_data.continuous[i,j]
+            preallocated_data.discrete[i,j] = encode(dmap, value)
+        end
+    end
+
+    ############################################################################
+
+    starttime = time()
+    iter = 0
+    score = calc_complete_score(preallocated_data, modelparams, staticparams)
+
+    if optimize_structure || optimize_target_bins || optimize_parent_bins
+        score_diff = Inf
+        SCORE_DIFF_THRESHOLD = 10.0
+        while score_diff > SCORE_DIFF_THRESHOLD
+
+            iter += 1
+            verbosity == 0 || @printf("\nITER %d: %.4f (Δ%.4f) t=%.0f\n", iter, score, score_diff, time()-starttime)
+
+            if optimize_structure
+                optimize_structure!(modelparams, staticparams, preallocated_data, forced=(forced_lat, forced_lon), max_parents=max_parents, verbosity=verbosity)
+            end
+            if optimize_target_bins
+                optimize_target_bins!(modelparams, staticparams, preallocated_data)
+            end
+            if optimize_parent_bins
+                optimize_parent_bins!(modelparams, staticparams, preallocated_data)
+            end
+
+            score_new = calc_complete_score(preallocated_data, modelparams, staticparams)
+            score_diff = score_new - score
+            score = score_new
+        end
+    end
+
+    if verbosity > 0
+        println("\nELAPSED TIME: ", time()-starttime, "s")
+        println("FINAL: ", score)
+
+        println("\nStructure:")
+        println("lat: ", map(f->symbol(f), features[modelparams.parents_lat]))
+        println("lon: ", map(f->symbol(f), features[modelparams.parents_lon]))
+
+        println("\nTarget Bins:")
+        println("lat: ", modelparams.binmaps[ind_lat].binedges)
+        println("lon: ", modelparams.binmaps[ind_lon].binedges)
+
+        println("\nIndicator Bins:")
+        if !isempty(modelparams.parents_lat) && !isempty(modelparams.parents_lon)
+            for parent_index in unique([modelparams.parents_lat, modelparams.parents_lon])
+                sym = symbol(features[parent_index])
+                if isa(modelparams.binmaps[parent_index], LinearDiscretizer)
+                    println(sym, "\t", modelparams.binmaps[parent_index].binedges)
+                elseif isa(modelparams.binmaps[parent_index], HybridDiscretizer)
+                    println(sym, "\t", modelparams.binmaps[parent_index].lin.binedges)
+                end
+            end
+        else
+            println("[empty]")
+        end
+    end
+
+    binmapdict = Dict{Symbol, AbstractDiscretizer}()
+    for (b,f) in zip(modelparams.binmaps, staticparams.features)
+        binmapdict[symbol(f)] = b
+    end
+
+    res = GraphLearningResult("trained", staticparams.features, staticparams.ind_lat, staticparams.ind_lon,
+                              modelparams.parents_lat, modelparams.parents_lon, NaN,
+                              preallocated_data.bincounts, preallocated_data.discrete[1:data.rowcount,:]')
     model = dbnmodel(get_emstats(res, binmapdict))
 
     DynamicBayesianNetworkBehavior(model, DBNSimParams(), DBNSimParams())
