@@ -959,7 +959,7 @@ type ModelPreallocatedData <: VehicleBehaviorPreallocatedData
     rowcount::Int               # number of populated entries
 
     function ModelPreallocatedData(dset::ModelTrainingData, args::Dict{Symbol,Any})
-        nsamples = nrow(dset)
+        nsamples = nrow(dset.dataframe)
 
         nfeatures = length(get(args,:indicators,DEFAULT_INDICATORS)) + 2
 
