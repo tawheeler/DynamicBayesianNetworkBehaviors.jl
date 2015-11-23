@@ -139,7 +139,7 @@ function dbnmodel{R<:Real, D<:AbstractDiscretizer, F<:AbstractFeature, G<:Abstra
     BN = build_bn(statsvec, targets, indicators, adj)
     dbnmodel(BN, statsvec, discretizerdict, targets, indicators)
 end
-function dbnmodel(modelstats::Dict{String, Any})
+function dbnmodel(modelstats::Dict{AbstractString, Any})
 
     discretizerdict = modelstats["binmaps"]
     targets    = modelstats["targets"]
@@ -155,7 +155,7 @@ function dbnmodel(modelstats::Dict{String, Any})
     dbnmodel(adj, stats, discretizerdict, convert(Vector{AbstractFeature}, targets),
                         convert(Vector{AbstractFeature}, indicators))
 end
-function dbnmodel(modelpstats_file::String)
+function dbnmodel(modelpstats_file::AbstractString)
     emstats = load(modelpstats_file)
     dbnmodel(emstats)
 end
@@ -455,7 +455,7 @@ function calc_probability_for_uniform_sample_from_bin(
     end
 end
 
-function export_to_text(model::DBNModel, filename::String)
+function export_to_text(model::DBNModel, filename::AbstractString)
     # export a bayesian network to an encounter definition file
 
     n = model.n # the number of nodes
@@ -864,7 +864,7 @@ type ParentFeatures
 end
 
 type GraphLearningResult
-    fileroot     :: String
+    fileroot     :: AbstractString
     target_lat   :: AbstractFeature
     target_lon   :: AbstractFeature
     parents_lat  :: Vector{AbstractFeature}
@@ -876,7 +876,7 @@ type GraphLearningResult
     bayescore    :: Float64
 
     function GraphLearningResult(
-        basefolder     :: String,
+        basefolder     :: AbstractString,
         features       :: Vector{AbstractFeature},
         ind_lat        :: Int,
         ind_lon        :: Int,
@@ -1346,7 +1346,7 @@ function convert_dataset_to_matrix{F<:AbstractFeature}(
 end
 
 function get_emstats(res::GraphLearningResult, binmapdict::Dict{Symbol, AbstractDiscretizer})
-    emstats = Dict{String, Any}()
+    emstats = Dict{AbstractString, Any}()
     emstats["binmaps"] = binmapdict
     emstats["targets"] = [res.target_lat, res.target_lon]
     emstats["indicators"] = res.features[3:end]
