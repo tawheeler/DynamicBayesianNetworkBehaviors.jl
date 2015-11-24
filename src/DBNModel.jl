@@ -167,7 +167,7 @@ end
 
 indexof(f::Symbol, model::DBNModel) = model.BN.index[f]
 indexof(f::AbstractFeature, model::DBNModel) = model.BN.index[symbol(f)]
-is_parent(model::DBNModel, parent::Int, child::Int) = in(parent, in_neighbors(child, model.BN.dag))
+is_parent(model::DBNModel, parent::Int, child::Int) = in(parent, in_neighbors(model.BN.dag, child))
 is_parent(model::DBNModel, parent::Symbol, child::Symbol) = is_parent(model, model.BN.index[parent], model.BN.index[child])
 function parent_indeces(varindex::Int, model::DBNModel)
     parent_names = BayesNets.parents(model.BN, model.BN.names[varindex])
