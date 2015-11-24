@@ -1,3 +1,7 @@
+const NLOPT_SOLVER = :LN_SBPLX # :LN_COBYLA :LN_SBPLX :GN_DIRECT_L
+const NLOPT_XTOL_REL = 1e-4
+const BAYESIAN_SCORE_IMPROVEMENT_THRESOLD = 1e-1
+
 type ParentFeatures
     lat :: Vector{AbstractFeature}
     lon :: Vector{AbstractFeature}
@@ -90,8 +94,52 @@ immutable ModelData
     end
 end
 
+type BN_TrainParams <: AbstractVehicleBehaviorTrainParams
 
-type ModelPreallocatedData <: VehicleBehaviorPreallocatedData
+    starting_structure::ParentFeatures
+    forced::ParentFeatures
+    targetset::ModelTargets
+    indicators::Vector{AbstractFeature}
+    discretizerdict::Dict{Symbol, AbstractDiscretizer}
+
+    verbosity::Int # 0 → no printout, 1 → some printout, 2 → much printout, very wow
+    ncandidate_bins::Int # number of candidate bins during the prebinning phase
+    max_parents::Int # maximum number of parents per node in BN
+    nbins_lat::Int
+    nbins_lon::Int
+
+    preoptimize_target_bins::Bool
+    preoptimize_indicator_bins::Bool
+    optimize_structure::Bool
+    optimize_target_bins::Bool
+    optimize_parent_bins::Bool
+
+    function BN_TrainParams(;
+        starting_structure::ParentFeatures=ParentFeatures(),
+        forced::ParentFeatures=ParentFeatures(),
+        targetset::ModelTargets=ModelTargets(FUTUREDESIREDANGLE_250MS, FUTUREACCELERATION_250MS),
+        indicators::Vector{AbstractFeature}=copy(DEFAULT_INDICATORS),
+        discretizerdict::Dict{Symbol, AbstractDiscretizer}=deepcopy(DEFAULT_DISCRETIZERS),
+
+        verbosity::Int=0,
+        ncandidate_bins::Int=20,
+        max_parents::Int=6,
+        nbins_lat::Int=7,
+        nbins_lon::Int=7,
+        
+        preoptimize_target_bins::Bool=true,
+        preoptimize_indicator_bins::Bool=true,
+        optimize_structure::Bool=true,
+        optimize_target_bins::Bool=true,
+        optimize_parent_bins::Bool=true,
+        )
+
+        new(starting_structure, forced, targetset, indicators, discretizerdict,
+            verbosity, ncandidate_bins, max_parents, nbins_lat, nbins_lon,
+            preoptimize_target_bins, preoptimize_indicator_bins, optimize_structure, optimize_target_bins, optimize_parent_bins)
+    end
+end
+type BN_PreallocatedData <: AbstractVehicleBehaviorPreallocatedData
     #=
     Allocates the full size of continuous and discrete corresponding to the full dataset
     It then copies data into it based on the given fold assignment
@@ -102,254 +150,19 @@ type ModelPreallocatedData <: VehicleBehaviorPreallocatedData
     bincounts::Vector{Int}      # [nfeatures]
     rowcount::Int               # number of populated entries
 
-    function ModelPreallocatedData(dset::ModelTrainingData, args::Dict{Symbol,Any})
-        nsamples = nrow(dset.dataframe)
+    function BN_PreallocatedData(dset::ModelTrainingData, params::BN_TrainParams)
 
-        nfeatures = length(get(args,:indicators,DEFAULT_INDICATORS)) + 2
+        nsamples = nrow(dset.dataframe)
+        nfeatures = length(params.indicators) + 2
 
         continuous = Array(Float64, nsamples, nfeatures)
         discrete = Array(Int, nsamples, nfeatures)
         bincounts = Array(Int, nfeatures)
         rowcount = 0
+
         new(continuous, discrete, bincounts, rowcount)
     end
 end
-
-const DEFAULT_INDICATORS = [
-                    YAW, SPEED, VELFX, VELFY, DELTA_SPEED_LIMIT,
-                    D_CL, D_ML, D_MR, D_MERGE, D_SPLIT,
-                    TIMETOCROSSING_RIGHT, TIMETOCROSSING_LEFT, TIMESINCELANECROSSING, ESTIMATEDTIMETOLANECROSSING,
-                    N_LANE_L, N_LANE_R, HAS_LANE_L, HAS_LANE_R,
-                    TURNRATE, TURNRATE_GLOBAL, ACC, ACCFX, ACCFY, A_REQ_STAYINLANE, LANECURVATURE,
-
-                    HAS_FRONT, D_X_FRONT, D_Y_FRONT, V_X_FRONT, V_Y_FRONT, YAW_FRONT, TURNRATE_FRONT,
-                    HAS_REAR,  D_X_REAR,  D_Y_REAR,  V_X_REAR,  V_Y_REAR,  YAW_REAR,  TURNRATE_REAR,
-                               D_X_LEFT,  D_Y_LEFT,  V_X_LEFT,  V_Y_LEFT,  YAW_LEFT,  TURNRATE_LEFT,
-                               D_X_RIGHT, D_Y_RIGHT, V_X_RIGHT, V_Y_RIGHT, YAW_RIGHT, TURNRATE_RIGHT,
-                    A_REQ_FRONT, TTC_X_FRONT, TIMEGAP_X_FRONT,
-                    A_REQ_REAR,  TTC_X_REAR,  TIMEGAP_X_REAR,
-                    A_REQ_LEFT,  TTC_X_LEFT,  TIMEGAP_X_LEFT,
-                    A_REQ_RIGHT, TTC_X_RIGHT, TIMEGAP_X_RIGHT,
-
-                    SCENEVELFX,
-
-                    TIME_CONSECUTIVE_BRAKE, TIME_CONSECUTIVE_ACCEL, TIME_CONSECUTIVE_THROTTLE,
-                         PASTACC250MS,      PASTACC500MS,      PASTACC750MS,      PASTACC1S,
-                    PASTTURNRATE250MS, PASTTURNRATE500MS, PASTTURNRATE750MS, PASTTURNRATE1S,
-                       PASTVELFY250MS,    PASTVELFY500MS,    PASTVELFY750MS,    PASTVELFY1S,
-                        PASTD_CL250MS,     PASTD_CL500MS,     PASTD_CL750MS,     PASTD_CL1S,
-
-                         MAXACCFX500MS,     MAXACCFX750MS,     MAXACCFX1S,     MAXACCFX1500MS,     MAXACCFX2S,     MAXACCFX2500MS,     MAXACCFX3S,     MAXACCFX4S,
-                         MAXACCFY500MS,     MAXACCFY750MS,     MAXACCFY1S,     MAXACCFY1500MS,     MAXACCFY2S,     MAXACCFY2500MS,     MAXACCFY3S,     MAXACCFY4S,
-                      MAXTURNRATE500MS,  MAXTURNRATE750MS,  MAXTURNRATE1S,  MAXTURNRATE1500MS,  MAXTURNRATE2S,  MAXTURNRATE2500MS,  MAXTURNRATE3S,  MAXTURNRATE4S,
-                        MEANACCFX500MS,    MEANACCFX750MS,    MEANACCFX1S,    MEANACCFX1500MS,    MEANACCFX2S,    MEANACCFX2500MS,    MEANACCFX3S,    MEANACCFX4S,
-                        MEANACCFY500MS,    MEANACCFY750MS,    MEANACCFY1S,    MEANACCFY1500MS,    MEANACCFY2S,    MEANACCFY2500MS,    MEANACCFY3S,    MEANACCFY4S,
-                     MEANTURNRATE500MS, MEANTURNRATE750MS, MEANTURNRATE1S, MEANTURNRATE1500MS, MEANTURNRATE2S, MEANTURNRATE2500MS, MEANTURNRATE3S, MEANTURNRATE4S,
-                         STDACCFX500MS,     STDACCFX750MS,     STDACCFX1S,     STDACCFX1500MS,     STDACCFX2S,     STDACCFX2500MS,     STDACCFX3S,     STDACCFX4S,
-                         STDACCFY500MS,     STDACCFY750MS,     STDACCFY1S,     STDACCFY1500MS,     STDACCFY2S,     STDACCFY2500MS,     STDACCFY3S,     STDACCFY4S,
-                      STDTURNRATE500MS,  STDTURNRATE750MS,  STDTURNRATE1S,  STDTURNRATE1500MS,  STDTURNRATE2S,  STDTURNRATE2500MS,  STDTURNRATE3S,  STDTURNRATE4S,
-                ]
-const DEFAULT_DISCRETIZERS = Dict{Symbol,AbstractDiscretizer}()
-    DEFAULT_DISCRETIZERS[:f_turnrate_250ms      ] = LinearDiscretizer([-0.025,-0.02,-0.015,-0.01,-0.005,0.005,0.01,0.015,0.02,0.025], Int)
-    DEFAULT_DISCRETIZERS[:f_turnrate_500ms      ] = LinearDiscretizer([-0.025,-0.02,-0.015,-0.01,-0.005,0.005,0.01,0.015,0.02,0.025], Int)
-    DEFAULT_DISCRETIZERS[:f_accel_250ms         ] = LinearDiscretizer([-5.00,-3.045338252335337,-2.0,-1.50593693678868,-0.24991770599882523,0.06206203400761478,0.2489269478410686,0.5,3.0], Int)
-    DEFAULT_DISCRETIZERS[:f_accel_500ms         ] = LinearDiscretizer([-1.0,-0.25,-0.08,0.0,0.08,0.25,1.0], Int)
-    DEFAULT_DISCRETIZERS[:f_des_angle_250ms     ] = LinearDiscretizer([-0.25,-0.05,-0.03555530775035057,-0.02059935606012066,-0.005175260331415599,0.00642120613623413,0.02143002425291505,0.05,0.25], Int)
-    DEFAULT_DISCRETIZERS[:f_des_angle_500ms     ] = LinearDiscretizer([-0.025,-0.01,-0.005,0.005,0.01,0.025], Int)
-    DEFAULT_DISCRETIZERS[:f_des_speed_250ms     ] = LinearDiscretizer([-2.0,-1.0,-0.5,0.0,0.5,1.0,2.0]+29.06, Int)
-    DEFAULT_DISCRETIZERS[:f_des_speed_500ms     ] = LinearDiscretizer([-2.0,-1.0,-0.5,0.0,0.5,1.0,2.0]+29.06, Int)
-    DEFAULT_DISCRETIZERS[:f_acc_control_250ms   ] = LinearDiscretizer([-0.2,0.0,0.05,0.2,0.4,0.6], Int)
-    DEFAULT_DISCRETIZERS[:f_acc_control_500ms   ] = LinearDiscretizer([-0.2,0.0,0.05,0.2,0.4,0.6], Int)
-    DEFAULT_DISCRETIZERS[:f_deltaY_250ms        ] = LinearDiscretizer([-0.4,-0.2,-0.1,0.1,0.2,0.4], Int)
-    DEFAULT_DISCRETIZERS[:lanechange2s          ] = LinearDiscretizer([-0.5,0.5,1.5], Int)
-    DEFAULT_DISCRETIZERS[:yaw                   ] = LinearDiscretizer([-0.05,-0.02,-0.0065,0.0065,0.02,0.05], Int)
-    DEFAULT_DISCRETIZERS[:speed                 ] = LinearDiscretizer([0,10,20,22.5,25,30], Int)
-    DEFAULT_DISCRETIZERS[:delta_speed_limit     ] = LinearDiscretizer([-1.0,-0.5,-0.0,0.5,1.0], Int)
-    DEFAULT_DISCRETIZERS[:posFy                 ] = LinearDiscretizer([-2.5,-1.5,-0.5,0.5,1.5,2.5], Int)
-    DEFAULT_DISCRETIZERS[:velFx                 ] = LinearDiscretizer([0,10,20,22.5,25,30], Int)
-    DEFAULT_DISCRETIZERS[:velFy                 ] = LinearDiscretizer([-0.6,-0.4,-0.2,-0.1,0.1,0.2,0.4,0.6], Int)
-    DEFAULT_DISCRETIZERS[:turnrate              ] = LinearDiscretizer([-0.04,-0.015,-0.005,0.005,0.015,0.04], Int)
-    DEFAULT_DISCRETIZERS[:turnrate_global       ] = LinearDiscretizer([-0.04,-0.015,-0.005,0.005,0.015,0.04], Int)
-    DEFAULT_DISCRETIZERS[:acc                   ] = LinearDiscretizer([-1,-0.25,-0.08,0.08,0.25,1], Int)
-    DEFAULT_DISCRETIZERS[:accFx                 ] = LinearDiscretizer([-1,-0.25,-0.08,0.08,0.25,1], Int)
-    DEFAULT_DISCRETIZERS[:accFy                 ] = LinearDiscretizer([-0.5,-0.15,-0.05,0.05,0.15,0.5], Int)
-    DEFAULT_DISCRETIZERS[:cl                    ] = CategoricalDiscretizer([1.0,2.0,3.0,4.0], Int)
-    DEFAULT_DISCRETIZERS[:d_cl                  ] = LinearDiscretizer([-2.5,-1.5,-1,1,1.5,2.5], Int)
-    DEFAULT_DISCRETIZERS[:d_ml                  ] = LinearDiscretizer([-4,-3,-2,-1.5,-1,0], Int)
-    DEFAULT_DISCRETIZERS[:d_mr                  ] = LinearDiscretizer([0,1,1.5,2,3,4], Int)
-    DEFAULT_DISCRETIZERS[:d_merge               ] = LinearDiscretizer([0.0,50,75,100], Int)
-    DEFAULT_DISCRETIZERS[:d_split               ] = LinearDiscretizer([0.0,50,75,100], Int)
-    DEFAULT_DISCRETIZERS[:ttcr_ml               ] = datalineardiscretizer([0.0,6,9.6,10], Int)
-    DEFAULT_DISCRETIZERS[:ttcr_mr               ] = datalineardiscretizer([0.0,6,9.6,10], Int)
-    DEFAULT_DISCRETIZERS[:est_ttcr              ] = datalineardiscretizer([-10.0, -9.6, -6,0,6,9.6,10], Int)
-    DEFAULT_DISCRETIZERS[:scene_velFx           ] = LinearDiscretizer([0.0,10,20,22.5,25,30], Int)
-    DEFAULT_DISCRETIZERS[:a_req_stayinlane      ] = LinearDiscretizer([0,0.05,0.15,2], Int)
-    DEFAULT_DISCRETIZERS[:n_lane_right          ] = CategoricalDiscretizer([0.0,1.0,2.0,3.0,4.0], Int)
-    DEFAULT_DISCRETIZERS[:n_lane_left           ] = CategoricalDiscretizer([0.0,1.0,2.0,3.0,4.0], Int)
-    DEFAULT_DISCRETIZERS[:has_lane_left         ] = CategoricalDiscretizer([0.0,1.0], Int)
-    DEFAULT_DISCRETIZERS[:has_lane_right        ] = CategoricalDiscretizer([0.0,1.0], Int)
-    DEFAULT_DISCRETIZERS[:curvature             ] = LinearDiscretizer([-0.002,-0.0005,0.0005,0.002], Int)
-    DEFAULT_DISCRETIZERS[:has_front             ] = CategoricalDiscretizer([0.0,1.0], Int)
-    DEFAULT_DISCRETIZERS[:d_y_front             ] = datalineardiscretizer([-2,-0.5,0.5,2], Int)
-    DEFAULT_DISCRETIZERS[:v_x_front             ] = datalineardiscretizer([-1.5,-0.25,-0.1,0.1,0.25,1.5], Int)
-    DEFAULT_DISCRETIZERS[:d_x_front             ] = datalineardiscretizer([0.0,5,10,30,100], Int)
-    DEFAULT_DISCRETIZERS[:v_y_front             ] = datalineardiscretizer([-3,-1.5,-0.5,0.5,1.5,3], Int)
-    DEFAULT_DISCRETIZERS[:yaw_front             ] = datalineardiscretizer([-0.1,-0.02,0.02,0.1], Int)
-    DEFAULT_DISCRETIZERS[:a_req_front           ] = datalineardiscretizer([-2,-1,-0.25,0], Int)
-    DEFAULT_DISCRETIZERS[:turnrate_front        ] = datalineardiscretizer([-0.04,-0.015,-0.005,0.005,0.015,0.04], Int)
-    DEFAULT_DISCRETIZERS[:ttc_x_front           ] = datalineardiscretizer([0.0,2,4,9,10], Int)
-    DEFAULT_DISCRETIZERS[:timegap_x_front       ] = datalineardiscretizer([0.0,2,4,9,10], Int)
-    DEFAULT_DISCRETIZERS[:has_rear              ] = CategoricalDiscretizer([0.0,1.0], Int)
-    DEFAULT_DISCRETIZERS[:d_y_rear              ] = datalineardiscretizer([-2,-0.5,0.5,2], Int)
-    DEFAULT_DISCRETIZERS[:v_x_rear              ] = datalineardiscretizer([-1.5,-0.25,-0.1,0.1,0.25,1.5], Int)
-    DEFAULT_DISCRETIZERS[:d_x_rear              ] = datalineardiscretizer([0.0,5,10,30,100], Int)
-    DEFAULT_DISCRETIZERS[:v_y_rear              ] = datalineardiscretizer([-3,-1.5,-0.5,0.5,1.5,3], Int)
-    DEFAULT_DISCRETIZERS[:yaw_rear              ] = datalineardiscretizer([-0.1,-0.02,0.02,0.1], Int)
-    DEFAULT_DISCRETIZERS[:a_req_rear            ] = datalineardiscretizer([0.0,1,2,10], Int)
-    DEFAULT_DISCRETIZERS[:turnrate_rear         ] = datalineardiscretizer([-0.04,-0.015,-0.005,0.005,0.015,0.04], Int)
-    DEFAULT_DISCRETIZERS[:ttc_x_rear            ] = datalineardiscretizer([0.0,2,4,8,10], Int)
-    DEFAULT_DISCRETIZERS[:timegap_x_rear        ] = datalineardiscretizer([0.0,2,4,9,10], Int)
-    DEFAULT_DISCRETIZERS[:d_y_left              ] = datalineardiscretizer([0.0,2,5,8], Int)
-    DEFAULT_DISCRETIZERS[:v_x_left              ] = datalineardiscretizer([-1.5,-0.25,-0.1,0.1,0.25,1.5], Int)
-    DEFAULT_DISCRETIZERS[:d_x_left              ] = datalineardiscretizer([-50.0,-20,-10,10,20,50], Int)
-    DEFAULT_DISCRETIZERS[:v_y_left              ] = datalineardiscretizer([-3,-1.5,-0.5,0.5,1.5,3], Int)
-    DEFAULT_DISCRETIZERS[:yaw_left              ] = datalineardiscretizer([-0.1,-0.02,0.02,0.1], Int)
-    DEFAULT_DISCRETIZERS[:a_req_left            ] = datalineardiscretizer([-2,-1,-0.05,0.05,1,2], Int)
-    DEFAULT_DISCRETIZERS[:turnrate_left         ] = datalineardiscretizer([-0.04,-0.015,-0.005,0.005,0.015,0.04], Int)
-    DEFAULT_DISCRETIZERS[:ttc_x_left            ] = datalineardiscretizer([0.0,2,4,8,10], Int)
-    DEFAULT_DISCRETIZERS[:timegap_x_left        ] = datalineardiscretizer([0.0,2,4,9,10], Int)
-    DEFAULT_DISCRETIZERS[:d_y_right             ] = datalineardiscretizer([-8.0,-5,-2,0], Int)
-    DEFAULT_DISCRETIZERS[:v_x_right             ] = datalineardiscretizer([-1.5,-0.25,-0.1,0.1,0.25,1.5], Int)
-    DEFAULT_DISCRETIZERS[:d_x_right             ] = datalineardiscretizer([-50.0,-20,-10,10,20,50], Int)
-    DEFAULT_DISCRETIZERS[:v_y_right             ] = datalineardiscretizer([-3,-1.5,-0.5,0.5,1.5,3], Int)
-    DEFAULT_DISCRETIZERS[:yaw_right             ] = datalineardiscretizer([-0.1,-0.02,0.02,0.1], Int)
-    DEFAULT_DISCRETIZERS[:a_req_right           ] = datalineardiscretizer([-2,-1,-0.05,0.05,1,2], Int)
-    DEFAULT_DISCRETIZERS[:turnrate_right        ] = datalineardiscretizer([-0.04,-0.015,-0.005,0.005,0.015,0.04], Int)
-    DEFAULT_DISCRETIZERS[:ttc_x_right           ] = datalineardiscretizer([0.0,2,4,8,10], Int)
-    DEFAULT_DISCRETIZERS[:timegap_x_right       ] = datalineardiscretizer([0.0,2,4,9,10], Int)
-    DEFAULT_DISCRETIZERS[:time_consecutive_brake] = datalineardiscretizer([0.0,0.251,0.501,1.001,2.0], Int)
-    DEFAULT_DISCRETIZERS[:time_consecutive_accel] = datalineardiscretizer([0.0,0.251,0.501,1.001,2.0], Int)
-    DEFAULT_DISCRETIZERS[:time_consecutive_throttle] = datalineardiscretizer([-2.0,-1.001,-0.501,-0.251,0.0,0.251,0.501,1.001,2.0], Int)
-    DEFAULT_DISCRETIZERS[:timesincelanecrossing ] = datalineardiscretizer([0.0,0.501,10.0], Int)
-    DEFAULT_DISCRETIZERS[:osg_isoccupied_f      ] = CategoricalDiscretizer([0.0,1.0], Int)
-    DEFAULT_DISCRETIZERS[:osg_isoccupied_fr     ] = CategoricalDiscretizer([0.0,1.0], Int)
-    DEFAULT_DISCRETIZERS[:osg_isoccupied_r      ] = CategoricalDiscretizer([0.0,1.0], Int)
-    DEFAULT_DISCRETIZERS[:osg_isoccupied_br     ] = CategoricalDiscretizer([0.0,1.0], Int)
-    DEFAULT_DISCRETIZERS[:osg_isoccupied_b      ] = CategoricalDiscretizer([0.0,1.0], Int)
-    DEFAULT_DISCRETIZERS[:osg_isoccupied_bl     ] = CategoricalDiscretizer([0.0,1.0], Int)
-    DEFAULT_DISCRETIZERS[:osg_isoccupied_l      ] = CategoricalDiscretizer([0.0,1.0], Int)
-    DEFAULT_DISCRETIZERS[:osg_isoccupied_fl     ] = CategoricalDiscretizer([0.0,1.0], Int)
-    DEFAULT_DISCRETIZERS[:osg_time_f            ] = LinearDiscretizer([0.0,4.0,8.0,12.0], Int)
-    DEFAULT_DISCRETIZERS[:osg_time_fr           ] = LinearDiscretizer([0.0,4.0,8.0,12.0], Int)
-    DEFAULT_DISCRETIZERS[:osg_time_r            ] = LinearDiscretizer([0.0,4.0,8.0,12.0], Int)
-    DEFAULT_DISCRETIZERS[:osg_time_br           ] = LinearDiscretizer([0.0,4.0,8.0,12.0], Int)
-    DEFAULT_DISCRETIZERS[:osg_time_b            ] = LinearDiscretizer([0.0,4.0,8.0,12.0], Int)
-    DEFAULT_DISCRETIZERS[:osg_time_bl           ] = LinearDiscretizer([0.0,4.0,8.0,12.0], Int)
-    DEFAULT_DISCRETIZERS[:osg_time_l            ] = LinearDiscretizer([0.0,4.0,8.0,12.0], Int)
-    DEFAULT_DISCRETIZERS[:osg_time_fl           ] = LinearDiscretizer([0.0,4.0,8.0,12.0], Int)
-    DEFAULT_DISCRETIZERS[:pastacc250ms          ] = LinearDiscretizer([-1,-0.25,-0.08,0.08,0.25,1], Int)
-    DEFAULT_DISCRETIZERS[:pastacc500ms          ] = LinearDiscretizer([-1,-0.25,-0.08,0.08,0.25,1], Int)
-    DEFAULT_DISCRETIZERS[:pastacc750ms          ] = LinearDiscretizer([-1,-0.25,-0.08,0.08,0.25,1], Int)
-    DEFAULT_DISCRETIZERS[:pastacc1s             ] = LinearDiscretizer([-1,-0.25,-0.08,0.08,0.25,1], Int)
-    DEFAULT_DISCRETIZERS[:pastturnrate250ms     ] = LinearDiscretizer([-0.02,-0.01,-0.005,0.005,0.01,0.02], Int)
-    DEFAULT_DISCRETIZERS[:pastturnrate500ms     ] = LinearDiscretizer([-0.02,-0.01,-0.005,0.005,0.01,0.02], Int)
-    DEFAULT_DISCRETIZERS[:pastturnrate750ms     ] = LinearDiscretizer([-0.02,-0.01,-0.005,0.005,0.01,0.02], Int)
-    DEFAULT_DISCRETIZERS[:pastturnrate1s        ] = LinearDiscretizer([-0.02,-0.01,-0.005,0.005,0.01,0.02], Int)
-    DEFAULT_DISCRETIZERS[:pastvelFy250ms        ] = LinearDiscretizer([-1.0,-0.5,-0.1,0.1,0.5,1.0], Int)
-    DEFAULT_DISCRETIZERS[:pastvelFy500ms        ] = LinearDiscretizer([-1.0,-0.5,-0.1,0.1,0.5,1.0], Int)
-    DEFAULT_DISCRETIZERS[:pastvelFy750ms        ] = LinearDiscretizer([-1.0,-0.5,-0.1,0.1,0.5,1.0], Int)
-    DEFAULT_DISCRETIZERS[:pastvelFy1s           ] = LinearDiscretizer([-1.0,-0.5,-0.1,0.1,0.5,1.0], Int)
-    DEFAULT_DISCRETIZERS[:pastd_cl250ms         ] = LinearDiscretizer([-0.3,-0.2,-0.1,0.1,0.2,0.3], Int)
-    DEFAULT_DISCRETIZERS[:pastd_cl500ms         ] = LinearDiscretizer([-0.5,-0.3,-0.15,0.15,0.3,0.5], Int)
-    DEFAULT_DISCRETIZERS[:pastd_cl750ms         ] = LinearDiscretizer([-0.75,-0.5,-0.25,0.25,0.5,0.75], Int)
-    DEFAULT_DISCRETIZERS[:pastd_cl1s            ] = LinearDiscretizer([-0.75,-0.5,-0.25,0.25,0.5,0.75], Int)
-    DEFAULT_DISCRETIZERS[:maxaccFx250ms         ] = LinearDiscretizer([-1.5,-0.5,-0.15,0.15,0.5,1.5], Int)
-    DEFAULT_DISCRETIZERS[:maxaccFx500ms         ] = LinearDiscretizer([-1.5,-0.5,-0.15,0.15,0.5,1.5], Int)
-    DEFAULT_DISCRETIZERS[:maxaccFx750ms         ] = LinearDiscretizer([-1.5,-0.5,-0.15,0.15,0.5,1.5], Int)
-    DEFAULT_DISCRETIZERS[:maxaccFx1s            ] = LinearDiscretizer([-1.5,-0.5,-0.15,0.15,0.5,1.5], Int)
-    DEFAULT_DISCRETIZERS[:maxaccFx1500ms        ] = LinearDiscretizer([-1.5,-0.5,-0.15,0.15,0.5,1.5], Int)
-    DEFAULT_DISCRETIZERS[:maxaccFx2s            ] = LinearDiscretizer([-1.5,-0.5,-0.15,0.15,0.5,1.5], Int)
-    DEFAULT_DISCRETIZERS[:maxaccFx2500ms        ] = LinearDiscretizer([-1.5,-0.5,-0.15,0.15,0.5,1.5], Int)
-    DEFAULT_DISCRETIZERS[:maxaccFx3s            ] = LinearDiscretizer([-1.5,-0.5,-0.15,0.15,0.5,1.5], Int)
-    DEFAULT_DISCRETIZERS[:maxaccFx4s            ] = LinearDiscretizer([-1.5,-0.5,-0.15,0.15,0.5,1.5], Int)
-    DEFAULT_DISCRETIZERS[:maxaccFy250ms         ] = LinearDiscretizer([-2,-0.5,-0.15,0.15,0.5,2], Int)
-    DEFAULT_DISCRETIZERS[:maxaccFy500ms         ] = LinearDiscretizer([-2,-0.5,-0.15,0.15,0.5,2], Int)
-    DEFAULT_DISCRETIZERS[:maxaccFy750ms         ] = LinearDiscretizer([-2,-0.5,-0.15,0.15,0.5,2], Int)
-    DEFAULT_DISCRETIZERS[:maxaccFy1s            ] = LinearDiscretizer([-2,-0.5,-0.15,0.15,0.5,2], Int)
-    DEFAULT_DISCRETIZERS[:maxaccFy1500ms        ] = LinearDiscretizer([-2,-0.5,-0.15,0.15,0.5,2], Int)
-    DEFAULT_DISCRETIZERS[:maxaccFy2s            ] = LinearDiscretizer([-2,-0.5,-0.15,0.15,0.5,2], Int)
-    DEFAULT_DISCRETIZERS[:maxaccFy2500ms        ] = LinearDiscretizer([-2,-0.5,-0.15,0.15,0.5,2], Int)
-    DEFAULT_DISCRETIZERS[:maxaccFy3s            ] = LinearDiscretizer([-2,-0.5,-0.15,0.15,0.5,2], Int)
-    DEFAULT_DISCRETIZERS[:maxaccFy4s            ] = LinearDiscretizer([-2,-0.5,-0.15,0.15,0.5,2], Int)
-    DEFAULT_DISCRETIZERS[:maxturnrate250ms      ] = LinearDiscretizer([-0.1,-0.03,-0.004,0.004,0.03,0.1], Int)
-    DEFAULT_DISCRETIZERS[:maxturnrate500ms      ] = LinearDiscretizer([-0.1,-0.03,-0.004,0.004,0.03,0.1], Int)
-    DEFAULT_DISCRETIZERS[:maxturnrate750ms      ] = LinearDiscretizer([-0.1,-0.03,-0.004,0.004,0.03,0.1], Int)
-    DEFAULT_DISCRETIZERS[:maxturnrate1s         ] = LinearDiscretizer([-0.1,-0.03,-0.004,0.004,0.03,0.1], Int)
-    DEFAULT_DISCRETIZERS[:maxturnrate1500ms     ] = LinearDiscretizer([-0.1,-0.03,-0.004,0.004,0.03,0.1], Int)
-    DEFAULT_DISCRETIZERS[:maxturnrate2s         ] = LinearDiscretizer([-0.1,-0.03,-0.004,0.004,0.03,0.1], Int)
-    DEFAULT_DISCRETIZERS[:maxturnrate2500ms     ] = LinearDiscretizer([-0.1,-0.03,-0.004,0.004,0.03,0.1], Int)
-    DEFAULT_DISCRETIZERS[:maxturnrate3s         ] = LinearDiscretizer([-0.1,-0.03,-0.004,0.004,0.03,0.1], Int)
-    DEFAULT_DISCRETIZERS[:maxturnrate4s         ] = LinearDiscretizer([-0.1,-0.03,-0.004,0.004,0.03,0.1], Int)
-    DEFAULT_DISCRETIZERS[:meanaccFx250ms        ] = LinearDiscretizer([-1.5,-0.5,-0.15,0.15,0.5,1.5], Int)
-    DEFAULT_DISCRETIZERS[:meanaccFx500ms        ] = LinearDiscretizer([-1.5,-0.5,-0.15,0.15,0.5,1.5], Int)
-    DEFAULT_DISCRETIZERS[:meanaccFx750ms        ] = LinearDiscretizer([-1.5,-0.5,-0.15,0.15,0.5,1.5], Int)
-    DEFAULT_DISCRETIZERS[:meanaccFx1s           ] = LinearDiscretizer([-1.5,-0.5,-0.15,0.15,0.5,1.5], Int)
-    DEFAULT_DISCRETIZERS[:meanaccFx1500ms       ] = LinearDiscretizer([-1.5,-0.5,-0.15,0.15,0.5,1.5], Int)
-    DEFAULT_DISCRETIZERS[:meanaccFx2s           ] = LinearDiscretizer([-1.5,-0.5,-0.15,0.15,0.5,1.5], Int)
-    DEFAULT_DISCRETIZERS[:meanaccFx2500ms       ] = LinearDiscretizer([-1.5,-0.5,-0.15,0.15,0.5,1.5], Int)
-    DEFAULT_DISCRETIZERS[:meanaccFx3s           ] = LinearDiscretizer([-1.5,-0.5,-0.15,0.15,0.5,1.5], Int)
-    DEFAULT_DISCRETIZERS[:meanaccFx4s           ] = LinearDiscretizer([-1.5,-0.5,-0.15,0.15,0.5,1.5], Int)
-    DEFAULT_DISCRETIZERS[:meanaccFy100ms        ] = LinearDiscretizer([-2,-0.5,-0.15,0.15,0.5,2], Int)
-    DEFAULT_DISCRETIZERS[:meanaccFy150ms        ] = LinearDiscretizer([-2,-0.5,-0.15,0.15,0.5,2], Int)
-    DEFAULT_DISCRETIZERS[:meanaccFy200ms        ] = LinearDiscretizer([-2,-0.5,-0.15,0.15,0.5,2], Int)
-    DEFAULT_DISCRETIZERS[:meanaccFy250ms        ] = LinearDiscretizer([-2,-0.5,-0.15,0.15,0.5,2], Int)
-    DEFAULT_DISCRETIZERS[:meanaccFy500ms        ] = LinearDiscretizer([-2,-0.5,-0.15,0.15,0.5,2], Int)
-    DEFAULT_DISCRETIZERS[:meanaccFy750ms        ] = LinearDiscretizer([-2,-0.5,-0.15,0.15,0.5,2], Int)
-    DEFAULT_DISCRETIZERS[:meanaccFy1s           ] = LinearDiscretizer([-2,-0.5,-0.15,0.15,0.5,2], Int)
-    DEFAULT_DISCRETIZERS[:meanaccFy1500ms       ] = LinearDiscretizer([-2,-0.5,-0.15,0.15,0.5,2], Int)
-    DEFAULT_DISCRETIZERS[:meanaccFy2s           ] = LinearDiscretizer([-2,-0.5,-0.15,0.15,0.5,2], Int)
-    DEFAULT_DISCRETIZERS[:meanaccFy2500ms       ] = LinearDiscretizer([-2,-0.5,-0.15,0.15,0.5,2], Int)
-    DEFAULT_DISCRETIZERS[:meanaccFy3s           ] = LinearDiscretizer([-2,-0.5,-0.15,0.15,0.5,2], Int)
-    DEFAULT_DISCRETIZERS[:meanaccFy4s           ] = LinearDiscretizer([-2,-0.5,-0.15,0.15,0.5,2], Int)
-    DEFAULT_DISCRETIZERS[:meanturnrate250ms     ] = LinearDiscretizer([-0.1,-0.03,-0.004,0.004,0.03,0.1], Int)
-    DEFAULT_DISCRETIZERS[:meanturnrate500ms     ] = LinearDiscretizer([-0.1,-0.03,-0.004,0.004,0.03,0.1], Int)
-    DEFAULT_DISCRETIZERS[:meanturnrate750ms     ] = LinearDiscretizer([-0.1,-0.03,-0.004,0.004,0.03,0.1], Int)
-    DEFAULT_DISCRETIZERS[:meanturnrate1s        ] = LinearDiscretizer([-0.1,-0.03,-0.004,0.004,0.03,0.1], Int)
-    DEFAULT_DISCRETIZERS[:meanturnrate1500ms    ] = LinearDiscretizer([-0.1,-0.03,-0.004,0.004,0.03,0.1], Int)
-    DEFAULT_DISCRETIZERS[:meanturnrate2s        ] = LinearDiscretizer([-0.1,-0.03,-0.004,0.004,0.03,0.1], Int)
-    DEFAULT_DISCRETIZERS[:meanturnrate2500ms    ] = LinearDiscretizer([-0.1,-0.03,-0.004,0.004,0.03,0.1], Int)
-    DEFAULT_DISCRETIZERS[:meanturnrate3s        ] = LinearDiscretizer([-0.1,-0.03,-0.004,0.004,0.03,0.1], Int)
-    DEFAULT_DISCRETIZERS[:meanturnrate4s        ] = LinearDiscretizer([-0.1,-0.03,-0.004,0.004,0.03,0.1], Int)
-    DEFAULT_DISCRETIZERS[:stdaccFx250ms         ] = LinearDiscretizer([0,0.1,0.2,0.5], Int)
-    DEFAULT_DISCRETIZERS[:stdaccFx500ms         ] = LinearDiscretizer([0,0.1,0.2,0.5], Int)
-    DEFAULT_DISCRETIZERS[:stdaccFx750ms         ] = LinearDiscretizer([0,0.1,0.2,0.5], Int)
-    DEFAULT_DISCRETIZERS[:stdaccFx1s            ] = LinearDiscretizer([0,0.1,0.2,0.5], Int)
-    DEFAULT_DISCRETIZERS[:stdaccFx1500ms        ] = LinearDiscretizer([0,0.1,0.2,0.5], Int)
-    DEFAULT_DISCRETIZERS[:stdaccFx2s            ] = LinearDiscretizer([0,0.1,0.2,0.5], Int)
-    DEFAULT_DISCRETIZERS[:stdaccFx2500ms        ] = LinearDiscretizer([0,0.1,0.2,0.5], Int)
-    DEFAULT_DISCRETIZERS[:stdaccFx3s            ] = LinearDiscretizer([0,0.1,0.2,0.5], Int)
-    DEFAULT_DISCRETIZERS[:stdaccFx4s            ] = LinearDiscretizer([0,0.1,0.2,0.5], Int)
-    DEFAULT_DISCRETIZERS[:stdaccFy250ms         ] = LinearDiscretizer([0,0.1,0.2,0.5], Int)
-    DEFAULT_DISCRETIZERS[:stdaccFy500ms         ] = LinearDiscretizer([0,0.1,0.2,0.5], Int)
-    DEFAULT_DISCRETIZERS[:stdaccFy750ms         ] = LinearDiscretizer([0,0.1,0.2,0.5], Int)
-    DEFAULT_DISCRETIZERS[:stdaccFy1s            ] = LinearDiscretizer([0,0.1,0.2,0.5], Int)
-    DEFAULT_DISCRETIZERS[:stdaccFy1500ms        ] = LinearDiscretizer([0,0.1,0.2,0.5], Int)
-    DEFAULT_DISCRETIZERS[:stdaccFy2s            ] = LinearDiscretizer([0,0.1,0.2,0.5], Int)
-    DEFAULT_DISCRETIZERS[:stdaccFy2500ms        ] = LinearDiscretizer([0,0.1,0.2,0.5], Int)
-    DEFAULT_DISCRETIZERS[:stdaccFy3s            ] = LinearDiscretizer([0,0.1,0.2,0.5], Int)
-    DEFAULT_DISCRETIZERS[:stdaccFy4s            ] = LinearDiscretizer([0,0.1,0.2,0.5], Int)
-    DEFAULT_DISCRETIZERS[:stdturnrate250ms      ] = LinearDiscretizer([0,0.01,0.02,0.04], Int)
-    DEFAULT_DISCRETIZERS[:stdturnrate500ms      ] = LinearDiscretizer([0,0.01,0.02,0.04], Int)
-    DEFAULT_DISCRETIZERS[:stdturnrate750ms      ] = LinearDiscretizer([0,0.01,0.02,0.04], Int)
-    DEFAULT_DISCRETIZERS[:stdturnrate1s         ] = LinearDiscretizer([0,0.01,0.02,0.04], Int)
-    DEFAULT_DISCRETIZERS[:stdturnrate1500ms     ] = LinearDiscretizer([0,0.01,0.02,0.04], Int)
-    DEFAULT_DISCRETIZERS[:stdturnrate2s         ] = LinearDiscretizer([0,0.01,0.02,0.04], Int)
-    DEFAULT_DISCRETIZERS[:stdturnrate2500ms     ] = LinearDiscretizer([0,0.01,0.02,0.04], Int)
-    DEFAULT_DISCRETIZERS[:stdturnrate3s         ] = LinearDiscretizer([0,0.01,0.02,0.04], Int)
-    DEFAULT_DISCRETIZERS[:stdturnrate4s         ] = LinearDiscretizer([0,0.01,0.02,0.04], Int)
-const NLOPT_SOLVER = :LN_SBPLX # :LN_COBYLA :LN_SBPLX :GN_DIRECT_L
-const NLOPT_XTOL_REL = 1e-4
-const BAYESIAN_SCORE_IMPROVEMENT_THRESOLD = 1e-1
 
 function calc_bincounts(
     data_sorted_ascending::Vector{Float64},
@@ -832,7 +645,7 @@ end
 function SmileExtra.statistics(
     targetind::Int,
     parents::AbstractVector{Int},
-    data::ModelPreallocatedData,
+    data::BN_PreallocatedData,
     )
 
     bincounts = data.bincounts
@@ -857,7 +670,7 @@ end
 function SmileExtra.log_bayes_score_component{I<:Integer}(
     i::Int,
     parents::AbstractVector{I},
-    data::ModelPreallocatedData,
+    data::BN_PreallocatedData,
     )
 
     #=
@@ -909,7 +722,7 @@ end
 function SmileExtra.log_bayes_score_component{I<:Integer}(
     i::Int,
     parents::AbstractVector{I},
-    data::ModelPreallocatedData,
+    data::BN_PreallocatedData,
     cache::Dict{Vector{Int}, Float64}
     )
 
@@ -930,7 +743,7 @@ function calc_bayesian_score(
         log_bayes_score_component(staticparams.ind_lon, modelparams.parents_lon, data.bincounts, data.discrete)
 end
 function calc_bayesian_score(
-    data::ModelPreallocatedData,
+    data::BN_PreallocatedData,
     modelparams::ModelParams,
     staticparams::ModelStaticParams
     )
@@ -1004,7 +817,7 @@ function calc_discretize_score(
     score
 end
 function calc_discretize_score(
-    data::ModelPreallocatedData,
+    data::BN_PreallocatedData,
     modelparams::ModelParams,
     staticparams::ModelStaticParams
     )
@@ -1039,7 +852,7 @@ function calc_component_score(
     target_index::Int,
     target_parents::Vector{Int},
     target_binmap::AbstractDiscretizer,
-    data::ModelPreallocatedData,
+    data::BN_PreallocatedData,
     stats::AbstractMatrix{Int}
     )
 
@@ -1062,7 +875,7 @@ function calc_component_score(
     target_index::Int,
     target_parents::Vector{Int},
     target_binmap::AbstractDiscretizer,
-    data::ModelPreallocatedData
+    data::BN_PreallocatedData
     )
 
     stats = SmileExtra.statistics(target_index, target_parents, data)
@@ -1087,7 +900,7 @@ function calc_component_score(
     target_index::Int,
     target_parents::Vector{Int},
     target_binmap::AbstractDiscretizer,
-    data::ModelPreallocatedData,
+    data::BN_PreallocatedData,
     score_cache::Dict{Vector{Int}, Float64}
     )
 
@@ -1110,7 +923,7 @@ function calc_complete_score(
     bayesian_score + discretize_score
 end
 function calc_complete_score(
-    data::ModelPreallocatedData,
+    data::BN_PreallocatedData,
     modelparams::ModelParams,
     staticparams::ModelStaticParams
     )
@@ -1146,7 +959,7 @@ end
 function optimize_structure!(
     modelparams::ModelParams,
     staticparams::ModelStaticParams,
-    data::Union{ModelData, ModelPreallocatedData};
+    data::Union{ModelData, BN_PreallocatedData};
     forced::Tuple{Vector{Int}, Vector{Int}}=(Int[], Int[]), # lat, lon
     verbosity::Integer=0,
     max_parents::Integer=6
@@ -1355,7 +1168,7 @@ end
 function optimize_target_bins!(
     modelparams::ModelParams,
     staticparams::ModelStaticParams,
-    data::Union{ModelData, ModelPreallocatedData},
+    data::Union{ModelData, BN_PreallocatedData},
     )
 
     binmaps = modelparams.binmaps
@@ -1439,7 +1252,7 @@ function optimize_indicator_bins!(
     index::Int,
     modelparams::ModelParams,
     staticparams::ModelStaticParams,
-    data::Union{ModelData, ModelPreallocatedData},
+    data::Union{ModelData, BN_PreallocatedData},
     )
 
     nothing
@@ -1553,7 +1366,7 @@ function optimize_indicator_bins!(
     index::Int,
     modelparams::ModelParams,
     staticparams::ModelStaticParams,
-    data::ModelPreallocatedData
+    data::BN_PreallocatedData
     )
 
     nbins = nlabels(binmap)
@@ -1766,7 +1579,7 @@ function optimize_indicator_bins!(
     index::Int,
     modelparams::ModelParams,
     staticparams::ModelStaticParams,
-    data::ModelPreallocatedData
+    data::BN_PreallocatedData
     )
 
 
@@ -1981,7 +1794,7 @@ function train(::Type{DynamicBayesianNetworkBehavior}, trainingframes::DataFrame
         nbins = nlabels(disc)
         if nbins_lat != -1
             nbins = nbins_lat
-            disc = LinearDiscretizer(linspace(extremes[1], extremes[2], nbins+1))
+            disc = LinearDiscretizer(collect(linspace(extremes[1], extremes[2], nbins+1)))
             modelparams.binmaps[ind_lat] = disc
         end
 
@@ -2002,7 +1815,7 @@ function train(::Type{DynamicBayesianNetworkBehavior}, trainingframes::DataFrame
         nbins = nlabels(disc)
         if nbins_lon != -1
             nbins = nbins_lon
-            disc = LinearDiscretizer(linspace(extremes[1], extremes[2], nbins+1))
+            disc = LinearDiscretizer(collect(linspace(extremes[1], extremes[2], nbins+1)))
             modelparams.binmaps[ind_lon] = disc
         end
 
@@ -2146,64 +1959,32 @@ end
 function train(
     ::Type{DynamicBayesianNetworkBehavior},
     training_data::ModelTrainingData,
+    preallocated_data::BN_PreallocatedData,
+    params::BN_TrainParams,
     fold::Int,
     fold_assignment::FoldAssignment,
     match_fold::Bool,
-    preallocated_data::ModelPreallocatedData;
-
-    starting_structure::ParentFeatures=ParentFeatures(),
-    forced::ParentFeatures=ParentFeatures(),
-    targetset::ModelTargets=ModelTargets(FUTUREDESIREDANGLE_250MS, FUTUREACCELERATION_250MS),
-    indicators::Vector{AbstractFeature}=copy(DEFAULT_INDICATORS),
-    discretizerdict::Dict{Symbol, AbstractDiscretizer}=deepcopy(DEFAULT_DISCRETIZERS),
-    ncandidate_bins::Int=20,
-    verbosity::Int=0,
-    preoptimize_target_bins::Bool=true,
-    preoptimize_indicator_bins::Bool=true,
-    optimize_structure::Bool=true,
-    optimize_target_bins::Bool=true,
-    optimize_parent_bins::Bool=true,
-    max_parents::Int=6,
-    args::Dict=Dict{Symbol,Any}()
     )
 
-    nbins_lat = -1
-    nbins_lon = -1
-    for (k,v) in args
-        if k == :starting_structure
-            starting_structure = v
-        elseif k == :forced
-            forced = v
-        elseif k == :targetset
-            targetset = v
-        elseif k == :indicators
-            indicators = copy(v)
-        elseif k == :discretizerdict
-            discretizerdict = v
-        elseif k == :verbosity
-            verbosity = v
-        elseif k == :preoptimize_target_bins
-            preoptimize_target_bins = v
-        elseif k == :preoptimize_parent_bins || k == :preoptimize_indicator_bins
-            preoptimize_indicator_bins = v
-        elseif k == :optimize_structure
-            optimize_structure = v
-        elseif k == :optimize_target_bins
-            optimize_target_bins = v
-        elseif k == :optimize_parent_bins
-            optimize_parent_bins = v
-        elseif k == :ncandidate_bins
-            ncandidate_bins = v
-        elseif k == :nbins_lat
-            nbins_lat = v
-        elseif k == :nbins_lon
-            nbins_lon = v
-        elseif k == :max_parents
-            max_parents = v
-        else
-            warn("Train DynamicBayesianNetworkBehavior: ignoring $k")
-        end
-    end
+    starting_structure = params.starting_structure
+    forced = params.forced
+    targetset = params.targetset
+    indicators = params.indicators
+    discretizerdict = params.discretizerdict
+
+    verbosity = params.verbosity
+    ncandidate_bins = params.ncandidate_bins
+    max_parents = params.max_parents
+    nbins_lat = params.nbins_lat
+    nbins_lon = params.nbins_lon
+
+    preoptimize_target_bins = params.preoptimize_target_bins
+    preoptimize_indicator_bins = params.preoptimize_indicator_bins
+    optimize_structure = params.optimize_structure
+    optimize_target_bins = params.optimize_target_bins
+    optimize_parent_bins = params.optimize_parent_bins
+
+    ####################
 
     targets = [targetset.lat, targetset.lon]
     features = [targets; indicators]
@@ -2266,7 +2047,7 @@ function train(
         nbins = nlabels(disc)
         if nbins_lat != -1
             nbins = nbins_lat
-            disc = LinearDiscretizer(linspace(extremes[1], extremes[2], nbins+1))
+            disc = LinearDiscretizer(collect(linspace(extremes[1], extremes[2], nbins+1)))
             modelparams.binmaps[ind_lat] = disc
         end
 
@@ -2287,7 +2068,7 @@ function train(
         nbins = nlabels(disc)
         if nbins_lon != -1
             nbins = nbins_lon
-            disc = LinearDiscretizer(linspace(extremes[1], extremes[2], nbins+1))
+            disc = LinearDiscretizer(collect(linspace(extremes[1], extremes[2], nbins+1)))
             modelparams.binmaps[ind_lon] = disc
         end
 
