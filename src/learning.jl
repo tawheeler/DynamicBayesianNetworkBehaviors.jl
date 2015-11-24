@@ -163,6 +163,14 @@ type BN_PreallocatedData <: AbstractVehicleBehaviorPreallocatedData
         new(continuous, discrete, bincounts, rowcount)
     end
 end
+function preallocate_learning_data(
+    ::Type{DynamicBayesianNetworkBehavior},
+    dset::ModelTrainingData,
+    params::BN_TrainParams)
+    
+    BN_PreallocatedData(dset, params)
+end
+
 
 function calc_bincounts(
     data_sorted_ascending::Vector{Float64},

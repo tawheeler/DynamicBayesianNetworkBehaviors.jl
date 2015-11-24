@@ -8,10 +8,19 @@ using SmileExtra
 
 import LightGraphs: topological_sort_by_dfs, in_neighbors, nv, ne
 import Discretizers: encode
-import AutomotiveDrivingModels: ModelTargets, AbstractVehicleBehavior,
-                                AbstractVehicleBehaviorPreallocatedData, AbstractVehicleBehaviorTrainParams,
-                                select_action, calc_action_loglikelihood,
-                                train, observe, _reverse_smoothing_sequential_moving_average, is_in_fold
+import AutomotiveDrivingModels:
+    ModelTargets,
+    AbstractVehicleBehavior,
+    AbstractVehicleBehaviorPreallocatedData,
+    AbstractVehicleBehaviorTrainParams,
+
+    preallocate_learning_data,
+    select_action,
+    calc_action_loglikelihood,
+    train,
+    observe,
+    _reverse_smoothing_sequential_moving_average,
+    is_in_fold
 
 export
     DBNModel,
@@ -19,7 +28,6 @@ export
     DBNSimParams,
     GraphLearningResult,
     ParentFeatures,
-    BN_PreallocatedData,
     BN_TrainParams,
 
     DEFAULT_INDICATORS,
