@@ -284,7 +284,7 @@ function sample!(model::DBNModel, assignment::Dict{Symbol, Int}, ordering::Vecto
     for name in model.BN.names[ordering]
         cpd = BayesNets.cpd(model.BN, name)
 
-        p = probvec(cpd, assignment)
+        p = BayesNets.probvec(cpd, assignment)
         r = rand()
         i = 1
         p_tot = 0.0
@@ -308,7 +308,7 @@ function sample_and_logP!(
     for name in model.BN.names[ordering]
         cpd = BayesNets.cpd(model.BN, name)
 
-        p = probvec(cpd, assignment)
+        p = BayesNets.probvec(cpd, assignment)
 
         r = rand()
         i = 1
@@ -340,7 +340,7 @@ function calc_probability_distribution_over_assignments!(
 
     # NOTE (tim): cpd.parameterFunction(assignment) returns the actual probability vector, not a copy
     cpd = BayesNets.cpd(model.BN, target)
-    copy!(dest, probvec(cpd, assignment))
+    copy!(dest, BayesNets.probvec(cpd, assignment))
     @assert(abs(sum(dest)-1.0) < 0.0001) # probability sums to 1.0
     dest
 end
