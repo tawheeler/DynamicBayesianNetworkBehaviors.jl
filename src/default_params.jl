@@ -4,6 +4,7 @@ const DEFAULT_INDICATORS = [
                     TIMETOCROSSING_RIGHT, TIMETOCROSSING_LEFT, TIMESINCELANECROSSING, ESTIMATEDTIMETOLANECROSSING,
                     N_LANE_L, N_LANE_R, HAS_LANE_L, HAS_LANE_R,
                     TURNRATE, TURNRATE_GLOBAL, ACC, ACCFX, ACCFY, A_REQ_STAYINLANE, LANECURVATURE,
+                    SUMO, IDM,
 
                     HAS_FRONT, D_X_FRONT, D_Y_FRONT, V_X_FRONT, V_Y_FRONT, YAW_FRONT, TURNRATE_FRONT,
                     HAS_REAR,  D_X_REAR,  D_Y_REAR,  V_X_REAR,  V_Y_REAR,  YAW_REAR,  TURNRATE_REAR,
@@ -67,6 +68,8 @@ const DEFAULT_DISCRETIZERS = Dict{Symbol,AbstractDiscretizer}()
     DEFAULT_DISCRETIZERS[:est_ttcr              ] = datalineardiscretizer([-10.0, -9.6, -6,0,6,9.6,10], Int)
     DEFAULT_DISCRETIZERS[:scene_velFx           ] = LinearDiscretizer([0.0,10,20,22.5,25,30], Int)
     DEFAULT_DISCRETIZERS[:a_req_stayinlane      ] = LinearDiscretizer([0,0.05,0.15,2], Int)
+    DEFAULT_DISCRETIZERS[:sumo                  ] = LinearDiscretizer([-5.00,-1.0,-0.5,0.0,0.5,3.0], Int)
+    DEFAULT_DISCRETIZERS[:idm                   ] = LinearDiscretizer([-5.00,-1.0,-0.5,0.0,0.5,3.0], Int)
     DEFAULT_DISCRETIZERS[:n_lane_right          ] = CategoricalDiscretizer([0.0,1.0,2.0,3.0,4.0], Int)
     DEFAULT_DISCRETIZERS[:n_lane_left           ] = CategoricalDiscretizer([0.0,1.0,2.0,3.0,4.0], Int)
     DEFAULT_DISCRETIZERS[:has_lane_left         ] = CategoricalDiscretizer([0.0,1.0], Int)

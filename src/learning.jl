@@ -102,6 +102,8 @@ type BN_TrainParams <: AbstractVehicleBehaviorTrainParams
     indicators::Vector{AbstractFeature}
     discretizerdict::Dict{Symbol, AbstractDiscretizer}
 
+    dirichlet_prior::DirichletPrior
+
     verbosity::Int # 0 → no printout, 1 → some printout, 2 → much printout, very wow
     ncandidate_bins::Int # number of candidate bins during the prebinning phase
     max_parents::Int # maximum number of parents per node in BN
@@ -121,12 +123,14 @@ type BN_TrainParams <: AbstractVehicleBehaviorTrainParams
         indicators::Vector{AbstractFeature}=copy(DEFAULT_INDICATORS),
         discretizerdict::Dict{Symbol, AbstractDiscretizer}=deepcopy(DEFAULT_DISCRETIZERS),
 
+        dirichlet_prior::DirichletPrior=UniformPrior(),
+
         verbosity::Int=0,
         ncandidate_bins::Int=20,
         max_parents::Int=6,
         nbins_lat::Int=7,
         nbins_lon::Int=7,
-        
+
         preoptimize_target_bins::Bool=true,
         preoptimize_indicator_bins::Bool=true,
         optimize_structure::Bool=true,
@@ -134,9 +138,29 @@ type BN_TrainParams <: AbstractVehicleBehaviorTrainParams
         optimize_parent_bins::Bool=true,
         )
 
-        new(starting_structure, forced, targetset, indicators, discretizerdict,
-            verbosity, ncandidate_bins, max_parents, nbins_lat, nbins_lon,
-            preoptimize_target_bins, preoptimize_indicator_bins, optimize_structure, optimize_target_bins, optimize_parent_bins)
+        retval = new()
+
+        retval.starting_structure = starting_structure
+        retval.forced = forced
+        retval.targetset = targetset
+        retval.indicators = indicators
+        retval.discretizerdict = discretizerdict
+
+        retval.dirichlet_prior = dirichlet_prior
+
+        retval.verbosity = verbosity
+        retval.ncandidate_bins = ncandidate_bins
+        retval.max_parents = max_parents
+        retval.nbins_lat = nbins_lat
+        retval.nbins_lon = nbins_lon
+
+        retval.preoptimize_target_bins = preoptimize_target_bins
+        retval.preoptimize_indicator_bins = preoptimize_indicator_bins
+        retval.optimize_structure = optimize_structure
+        retval.optimize_target_bins = optimize_target_bins
+        retval.optimize_parent_bins = optimize_parent_bins
+
+        retval
     end
 end
 type BN_PreallocatedData <: AbstractVehicleBehaviorPreallocatedData
@@ -166,7 +190,7 @@ end
 function preallocate_learning_data(
     dset::ModelTrainingData,
     params::BN_TrainParams)
-    
+
     BN_PreallocatedData(dset, params)
 end
 
@@ -648,6 +672,7 @@ function calc_categorical_score(
 
     logl
 end
+
 function SmileExtra.statistics(
     targetind::Int,
     parents::AbstractVector{Int},
@@ -677,6 +702,7 @@ function SmileExtra.log_bayes_score_component{I<:Integer}(
     i::Int,
     parents::AbstractVector{I},
     data::BN_PreallocatedData,
+    dirichlet_prior::DirichletPrior,
     )
 
     #=
@@ -706,7 +732,7 @@ function SmileExtra.log_bayes_score_component{I<:Integer}(
                   NOTE: that we only use the first 'data.rowcount' samples!
     =#
 
-    alpha = fill(1, r[i], isempty(parents) ? 1 : prod(r[parents]))
+    alpha = get(dirichlet_prior, i, r, parents)::Matrix{Float64}
 
     nfeatures = size(d,2)
 
@@ -737,17 +763,17 @@ function SmileExtra.log_bayes_score_component{I<:Integer}(
     end
     return (cache[parents] = log_bayes_score_component(i, parents, data))
 end
-function calc_bayesian_score(
-    data::ModelData,
-    modelparams::ModelParams,
-    staticparams::ModelStaticParams
-    )
+# function calc_bayesian_score(
+#     data::ModelData,
+#     modelparams::ModelParams,
+#     staticparams::ModelStaticParams
+#     )
 
-    # NOTE: this does not compute the score components for the indicator variables
+#     # NOTE: this does not compute the score components for the indicator variables
 
-    log_bayes_score_component(staticparams.ind_lat, modelparams.parents_lat, data.bincounts, data.discrete) +
-        log_bayes_score_component(staticparams.ind_lon, modelparams.parents_lon, data.bincounts, data.discrete)
-end
+#     log_bayes_score_component(staticparams.ind_lat, modelparams.parents_lat, data.bincounts, data.discrete) +
+#         log_bayes_score_component(staticparams.ind_lon, modelparams.parents_lon, data.bincounts, data.discrete)
+# end
 function calc_bayesian_score(
     data::BN_PreallocatedData,
     modelparams::ModelParams,
@@ -800,28 +826,28 @@ function calc_discretize_score(
 
     score
 end
-function calc_discretize_score(
-    data::ModelData,
-    modelparams::ModelParams,
-    staticparams::ModelStaticParams
-    )
+# function calc_discretize_score(
+#     data::ModelData,
+#     modelparams::ModelParams,
+#     staticparams::ModelStaticParams
+#     )
 
-    score = 0.0
+#     score = 0.0
 
-    binmap = modelparams.binmaps[staticparams.ind_lat]
-    stats = SmileExtra.statistics(staticparams.ind_lat, modelparams.parents_lat,
-                       data.bincounts, data.discrete)
-    score += calc_discretize_score(binmap, stats)
-    @assert(!isinf(score))
+#     binmap = modelparams.binmaps[staticparams.ind_lat]
+#     stats = SmileExtra.statistics(staticparams.ind_lat, modelparams.parents_lat,
+#                        data.bincounts, data.discrete)
+#     score += calc_discretize_score(binmap, stats)
+#     @assert(!isinf(score))
 
-    binmap = modelparams.binmaps[staticparams.ind_lon]
-    stats = SmileExtra.statistics(staticparams.ind_lon, modelparams.parents_lon,
-                       data.bincounts, data.discrete)
-    score += calc_discretize_score(binmap, stats)
-    @assert(!isinf(score))
+#     binmap = modelparams.binmaps[staticparams.ind_lon]
+#     stats = SmileExtra.statistics(staticparams.ind_lon, modelparams.parents_lon,
+#                        data.bincounts, data.discrete)
+#     score += calc_discretize_score(binmap, stats)
+#     @assert(!isinf(score))
 
-    score
-end
+#     score
+# end
 function calc_discretize_score(
     data::BN_PreallocatedData,
     modelparams::ModelParams,
@@ -842,18 +868,18 @@ function calc_discretize_score(
 
     score
 end
-function calc_component_score(
-    target_index::Int,
-    target_parents::Vector{Int},
-    target_binmap::AbstractDiscretizer,
-    data::ModelData,
-    stats::AbstractMatrix{Int}
-    )
+# function calc_component_score(
+#     target_index::Int,
+#     target_parents::Vector{Int},
+#     target_binmap::AbstractDiscretizer,
+#     data::ModelData,
+#     stats::AbstractMatrix{Int}
+#     )
 
-    calc_discretize_score(target_binmap, stats) +
-        log_bayes_score_component(target_index, target_parents,
-                                  data.bincounts, data.discrete)
-end
+#     calc_discretize_score(target_binmap, stats) +
+#         log_bayes_score_component(target_index, target_parents,
+#                                   data.bincounts, data.discrete)
+# end
 function calc_component_score(
     target_index::Int,
     target_parents::Vector{Int},
@@ -865,18 +891,18 @@ function calc_component_score(
     calc_discretize_score(target_binmap, stats) +
         log_bayes_score_component(target_index, target_parents, data)
 end
-function calc_component_score(
-    target_index::Int,
-    target_parents::Vector{Int},
-    target_binmap::AbstractDiscretizer,
-    data::ModelData
-    )
+# function calc_component_score(
+#     target_index::Int,
+#     target_parents::Vector{Int},
+#     target_binmap::AbstractDiscretizer,
+#     data::ModelData
+#     )
 
-    stats = SmileExtra.statistics(target_index, target_parents,
-                       data.bincounts, data.discrete)
+#     stats = SmileExtra.statistics(target_index, target_parents,
+#                        data.bincounts, data.discrete)
 
-    calc_component_score(target_index, target_parents, target_binmap, data, stats)
-end
+#     calc_component_score(target_index, target_parents, target_binmap, data, stats)
+# end
 function calc_component_score(
     target_index::Int,
     target_parents::Vector{Int},
@@ -887,21 +913,21 @@ function calc_component_score(
     stats = SmileExtra.statistics(target_index, target_parents, data)
     calc_component_score(target_index, target_parents, target_binmap, data, stats)
 end
-function calc_component_score(
-    target_index::Int,
-    target_parents::Vector{Int},
-    target_binmap::AbstractDiscretizer,
-    data::ModelData,
-    score_cache::Dict{Vector{Int}, Float64}
-    )
+# function calc_component_score(
+#     target_index::Int,
+#     target_parents::Vector{Int},
+#     target_binmap::AbstractDiscretizer,
+#     data::ModelData,
+#     score_cache::Dict{Vector{Int}, Float64}
+#     )
 
-    stats = SmileExtra.statistics(target_index, target_parents,
-                       data.bincounts, data.discrete)
+#     stats = SmileExtra.statistics(target_index, target_parents,
+#                        data.bincounts, data.discrete)
 
-    calc_discretize_score(target_binmap, stats) +
-        log_bayes_score_component(target_index, target_parents,
-                                  data.bincounts, data.discrete, score_cache)
-end
+#     calc_discretize_score(target_binmap, stats) +
+#         log_bayes_score_component(target_index, target_parents,
+#                                   data.bincounts, data.discrete, score_cache)
+# end
 function calc_component_score(
     target_index::Int,
     target_parents::Vector{Int},
@@ -914,20 +940,20 @@ function calc_component_score(
     calc_discretize_score(target_binmap, stats) +
         log_bayes_score_component(target_index, target_parents, data, score_cache)
 end
-function calc_complete_score(
-    data::ModelData,
-    modelparams::ModelParams,
-    staticparams::ModelStaticParams
-    )
+# function calc_complete_score(
+#     data::ModelData,
+#     modelparams::ModelParams,
+#     staticparams::ModelStaticParams
+#     )
 
-    bayesian_score = calc_bayesian_score(data, modelparams, staticparams)
-    discretize_score = calc_discretize_score(data, modelparams, staticparams)
+#     bayesian_score = calc_bayesian_score(data, modelparams, staticparams)
+#     discretize_score = calc_discretize_score(data, modelparams, staticparams)
 
-    @assert(!isinf(bayesian_score))
-    @assert(!isinf(discretize_score))
+#     @assert(!isinf(bayesian_score))
+#     @assert(!isinf(discretize_score))
 
-    bayesian_score + discretize_score
-end
+#     bayesian_score + discretize_score
+# end
 function calc_complete_score(
     data::BN_PreallocatedData,
     modelparams::ModelParams,
@@ -1263,110 +1289,110 @@ function optimize_indicator_bins!(
 
     nothing
 end
-function optimize_indicator_bins!(
-    binmap::LinearDiscretizer,
-    index::Int,
-    modelparams::ModelParams,
-    staticparams::ModelStaticParams,
-    data::ModelData
-    )
+# function optimize_indicator_bins!(
+#     binmap::LinearDiscretizer,
+#     index::Int,
+#     modelparams::ModelParams,
+#     staticparams::ModelStaticParams,
+#     data::ModelData
+#     )
 
-    nbins = nlabels(binmap)
-    if nbins ≤ 1
-        return nothing
-    end
+#     nbins = nlabels(binmap)
+#     if nbins ≤ 1
+#         return nothing
+#     end
 
-    bin_lo, bin_hi = extrema(binmap)
+#     bin_lo, bin_hi = extrema(binmap)
 
-    binmaps = modelparams.binmaps
-    ind_lat = staticparams.ind_lat
-    ind_lon = staticparams.ind_lon
-    parents_lat = modelparams.parents_lat
-    parents_lon = modelparams.parents_lon
-    binmap_lat = modelparams.binmaps[ind_lat]
-    binmap_lon = modelparams.binmaps[ind_lon]
-    nbins_lat = nlabels(binmap_lat)
-    nbins_lon = nlabels(binmap_lon)
+#     binmaps = modelparams.binmaps
+#     ind_lat = staticparams.ind_lat
+#     ind_lon = staticparams.ind_lon
+#     parents_lat = modelparams.parents_lat
+#     parents_lon = modelparams.parents_lon
+#     binmap_lat = modelparams.binmaps[ind_lat]
+#     binmap_lon = modelparams.binmaps[ind_lon]
+#     nbins_lat = nlabels(binmap_lat)
+#     nbins_lon = nlabels(binmap_lon)
 
-    starting_opt_vector = bins_actual_to_unit_range(binmap.binedges[2:nbins], bin_lo, bin_hi)
+#     starting_opt_vector = bins_actual_to_unit_range(binmap.binedges[2:nbins], bin_lo, bin_hi)
 
-    function overwrite_model_params!(x::Vector; ε::Float64=eps(Float64))
-        # override binedges
-        bin_edges = bins_unit_range_to_actual(x, bin_lo, bin_hi)
+#     function overwrite_model_params!(x::Vector; ε::Float64=eps(Float64))
+#         # override binedges
+#         bin_edges = bins_unit_range_to_actual(x, bin_lo, bin_hi)
 
-        for i = 1 : nbins-1
-            binmap.binedges[i+1] = max(bin_edges[i], binmap.binedges[i] + ε)
-        end
-        for i = nbins : -1 : 2
-            binmap.binedges[i] = min(binmap.binedges[i], binmap.binedges[i+1]-ε)
-        end
+#         for i = 1 : nbins-1
+#             binmap.binedges[i+1] = max(bin_edges[i], binmap.binedges[i] + ε)
+#         end
+#         for i = nbins : -1 : 2
+#             binmap.binedges[i] = min(binmap.binedges[i], binmap.binedges[i+1]-ε)
+#         end
 
-        # rediscretize
-        data.discrete[index,:] = encode(binmap, data.continuous[index,:])
+#         # rediscretize
+#         data.discrete[index,:] = encode(binmap, data.continuous[index,:])
 
-        nothing
-    end
-    function optimization_objective_both_parents(x::Vector, grad::Vector)
-        if length(grad) > 0
-            # do nothing - this is Nonlinear
-            warn("TRYING TO COMPUTE GRADIENT!")
-        end
+#         nothing
+#     end
+#     function optimization_objective_both_parents(x::Vector, grad::Vector)
+#         if length(grad) > 0
+#             # do nothing - this is Nonlinear
+#             warn("TRYING TO COMPUTE GRADIENT!")
+#         end
 
-        overwrite_model_params!(x)
+#         overwrite_model_params!(x)
 
-        score = calc_component_score(ind_lat, parents_lat, binmap_lat, data) +
-                calc_component_score(ind_lon, parents_lon, binmap_lon, data)
+#         score = calc_component_score(ind_lat, parents_lat, binmap_lat, data) +
+#                 calc_component_score(ind_lon, parents_lon, binmap_lon, data)
 
-        score
-    end
-    function optimization_objective_lat(x::Vector, grad::Vector)
-        if length(grad) > 0
-            # do nothing - this is Nonlinear
-            warn("TRYING TO COMPUTE GRADIENT!")
-        end
+#         score
+#     end
+#     function optimization_objective_lat(x::Vector, grad::Vector)
+#         if length(grad) > 0
+#             # do nothing - this is Nonlinear
+#             warn("TRYING TO COMPUTE GRADIENT!")
+#         end
 
-        overwrite_model_params!(x)
+#         overwrite_model_params!(x)
 
-        calc_component_score(ind_lat, parents_lat, binmap_lat, data)
-    end
-    function optimization_objective_lon(x::Vector, grad::Vector)
-        if length(grad) > 0
-            # do nothing - this is Nonlinear
-            warn("TRYING TO COMPUTE GRADIENT!")
-        end
+#         calc_component_score(ind_lat, parents_lat, binmap_lat, data)
+#     end
+#     function optimization_objective_lon(x::Vector, grad::Vector)
+#         if length(grad) > 0
+#             # do nothing - this is Nonlinear
+#             warn("TRYING TO COMPUTE GRADIENT!")
+#         end
 
-        overwrite_model_params!(x)
+#         overwrite_model_params!(x)
 
-        calc_component_score(ind_lon, parents_lon, binmap_lon, data)
-    end
+#         calc_component_score(ind_lon, parents_lon, binmap_lon, data)
+#     end
 
-    n = length(starting_opt_vector)
-    opt = Opt(NLOPT_SOLVER, n)
-    xtol_rel!(opt, NLOPT_XTOL_REL)
-    lower_bounds!(opt, zeros(Float64, n))
-    upper_bounds!(opt, ones(Float64, n))
+#     n = length(starting_opt_vector)
+#     opt = Opt(NLOPT_SOLVER, n)
+#     xtol_rel!(opt, NLOPT_XTOL_REL)
+#     lower_bounds!(opt, zeros(Float64, n))
+#     upper_bounds!(opt, ones(Float64, n))
 
-    in_lat = in(index, parents_lat)
-    in_lon = in(index, parents_lon)
-    if in_lat && in_lon
-        max_objective!(opt, optimization_objective_both_parents)
-    elseif in_lat
-        max_objective!(opt, optimization_objective_lat)
-    elseif in_lon
-        max_objective!(opt, optimization_objective_lon)
-    else
-        error("target is not an indicator variable")
-    end
+#     in_lat = in(index, parents_lat)
+#     in_lon = in(index, parents_lon)
+#     if in_lat && in_lon
+#         max_objective!(opt, optimization_objective_both_parents)
+#     elseif in_lat
+#         max_objective!(opt, optimization_objective_lat)
+#     elseif in_lon
+#         max_objective!(opt, optimization_objective_lon)
+#     else
+#         error("target is not an indicator variable")
+#     end
 
-    # enforce ordering of bins, f(x,g) ≤ 0
-    # for i = 1 : nbins-2
-    #     inequality_constraint!(opt, (x,g) -> x[i] - x[i+1])
-    # end
+#     # enforce ordering of bins, f(x,g) ≤ 0
+#     # for i = 1 : nbins-2
+#     #     inequality_constraint!(opt, (x,g) -> x[i] - x[i+1])
+#     # end
 
-    maxf, maxx, ret = optimize(opt, starting_opt_vector)
+#     maxf, maxx, ret = optimize(opt, starting_opt_vector)
 
-    overwrite_model_params!(maxx)
-end
+#     overwrite_model_params!(maxx)
+# end
 function optimize_indicator_bins!(
     binmap::LinearDiscretizer,
     index::Int,
@@ -1473,113 +1499,111 @@ function optimize_indicator_bins!(
 
     overwrite_model_params!(maxx)
 end
-function optimize_indicator_bins!(
-    binmap::HybridDiscretizer,
-    index::Int,
-    modelparams::ModelParams,
-    staticparams::ModelStaticParams,
-    data::ModelData
-    )
+# function optimize_indicator_bins!(
+#     binmap::HybridDiscretizer,
+#     index::Int,
+#     modelparams::ModelParams,
+#     staticparams::ModelStaticParams,
+#     data::ModelData
+#     )
+
+#     lin = binmap.lin
+#     nbins = nlabels(lin)
+#     if nbins ≤ 1
+#         return nothing
+#     end
+
+#     bin_lo, bin_hi = extrema(lin)
+#     binmaps = modelparams.binmaps
+#     ind_lat = staticparams.ind_lat
+#     ind_lon = staticparams.ind_lon
+#     parents_lat = modelparams.parents_lat
+#     parents_lon = modelparams.parents_lon
+#     binmap_lat = modelparams.binmaps[ind_lat]
+#     binmap_lon = modelparams.binmaps[ind_lon]
+#     nbins_lat = nlabels(binmap_lat)
+#     nbins_lon = nlabels(binmap_lon)
+
+#     starting_opt_vector = bins_actual_to_unit_range(lin.binedges[2:nbins], bin_lo, bin_hi)
+
+#     function overwrite_model_params!(x::Vector; ε::Float64=eps(Float64))
+#         # override binedges
+#         bin_edges = bins_unit_range_to_actual(x, bin_lo, bin_hi)
 
 
+#         for i = 1 : nbins-1
+#             lin.binedges[i+1] = max(bin_edges[i], lin.bin_edges[i] + ε)
+#         end
+#         for i = nbins : -1 : 2
+#             lin.binedges[i] = min(lin.bin_edges[i], lin.bin_edges[i+1]-ε)
+#         end
 
-    lin = binmap.lin
-    nbins = nlabels(lin)
-    if nbins ≤ 1
-        return nothing
-    end
+#         # rediscretize
+#         data.discrete[index,:] = encode(binmap, data.continuous[index,:])
 
-    bin_lo, bin_hi = extrema(lin)
-    binmaps = modelparams.binmaps
-    ind_lat = staticparams.ind_lat
-    ind_lon = staticparams.ind_lon
-    parents_lat = modelparams.parents_lat
-    parents_lon = modelparams.parents_lon
-    binmap_lat = modelparams.binmaps[ind_lat]
-    binmap_lon = modelparams.binmaps[ind_lon]
-    nbins_lat = nlabels(binmap_lat)
-    nbins_lon = nlabels(binmap_lon)
+#         nothing
+#     end
+#     function optimization_objective_both_parents(x::Vector, grad::Vector)
+#         if length(grad) > 0
+#             # do nothing - this is Nonlinear
+#             warn("TRYING TO COMPUTE GRADIENT!")
+#         end
 
-    starting_opt_vector = bins_actual_to_unit_range(lin.binedges[2:nbins], bin_lo, bin_hi)
+#         overwrite_model_params!(x)
 
-    function overwrite_model_params!(x::Vector; ε::Float64=eps(Float64))
-        # override binedges
-        bin_edges = bins_unit_range_to_actual(x, bin_lo, bin_hi)
+#         score = calc_component_score(ind_lat, parents_lat, binmap_lat, data) +
+#                 calc_component_score(ind_lon, parents_lon, binmap_lon, data)
 
+#         score
+#     end
+#     function optimization_objective_lat(x::Vector, grad::Vector)
+#         if length(grad) > 0
+#             # do nothing - this is Nonlinear
+#             warn("TRYING TO COMPUTE GRADIENT!")
+#         end
 
-        for i = 1 : nbins-1
-            lin.binedges[i+1] = max(bin_edges[i], lin.bin_edges[i] + ε)
-        end
-        for i = nbins : -1 : 2
-            lin.binedges[i] = min(lin.bin_edges[i], lin.bin_edges[i+1]-ε)
-        end
+#         overwrite_model_params!(x)
 
-        # rediscretize
-        data.discrete[index,:] = encode(binmap, data.continuous[index,:])
+#         calc_component_score(ind_lat, parents_lat, binmap_lat, data)
+#     end
+#     function optimization_objective_lon(x::Vector, grad::Vector)
+#         if length(grad) > 0
+#             # do nothing - this is Nonlinear
+#             warn("TRYING TO COMPUTE GRADIENT!")
+#         end
 
-        nothing
-    end
-    function optimization_objective_both_parents(x::Vector, grad::Vector)
-        if length(grad) > 0
-            # do nothing - this is Nonlinear
-            warn("TRYING TO COMPUTE GRADIENT!")
-        end
+#         overwrite_model_params!(x)
 
-        overwrite_model_params!(x)
+#         calc_component_score(ind_lon, parents_lon, binmap_lon, data)
+#     end
 
-        score = calc_component_score(ind_lat, parents_lat, binmap_lat, data) +
-                calc_component_score(ind_lon, parents_lon, binmap_lon, data)
+#     n = length(starting_opt_vector)
+#     opt = Opt(NLOPT_SOLVER, n)
+#     xtol_rel!(opt, NLOPT_XTOL_REL)
+#     lower_bounds!(opt, zeros(Float64, n))
+#     upper_bounds!(opt, ones(Float64, n))
 
-        score
-    end
-    function optimization_objective_lat(x::Vector, grad::Vector)
-        if length(grad) > 0
-            # do nothing - this is Nonlinear
-            warn("TRYING TO COMPUTE GRADIENT!")
-        end
+#     in_lat = in(index, parents_lat)
+#     in_lon = in(index, parents_lon)
+#     if in_lat && in_lon
+#         max_objective!(opt, optimization_objective_both_parents)
+#     elseif in_lat
+#         max_objective!(opt, optimization_objective_lat)
+#     elseif in_lon
+#         max_objective!(opt, optimization_objective_lon)
+#     else
+#         error("target is not an indicator variable")
+#     end
 
-        overwrite_model_params!(x)
+#     # enforce ordering of bins, f(x,g) ≤ 0
+#     # for i = 1 : nbins-2
+#     #     inequality_constraint!(opt, (x,g) -> x[i] - x[i+1])
+#     # end
 
-        calc_component_score(ind_lat, parents_lat, binmap_lat, data)
-    end
-    function optimization_objective_lon(x::Vector, grad::Vector)
-        if length(grad) > 0
-            # do nothing - this is Nonlinear
-            warn("TRYING TO COMPUTE GRADIENT!")
-        end
+#     maxf, maxx, ret = optimize(opt, starting_opt_vector)
 
-        overwrite_model_params!(x)
-
-        calc_component_score(ind_lon, parents_lon, binmap_lon, data)
-    end
-
-    n = length(starting_opt_vector)
-    opt = Opt(NLOPT_SOLVER, n)
-    xtol_rel!(opt, NLOPT_XTOL_REL)
-    lower_bounds!(opt, zeros(Float64, n))
-    upper_bounds!(opt, ones(Float64, n))
-
-    in_lat = in(index, parents_lat)
-    in_lon = in(index, parents_lon)
-    if in_lat && in_lon
-        max_objective!(opt, optimization_objective_both_parents)
-    elseif in_lat
-        max_objective!(opt, optimization_objective_lat)
-    elseif in_lon
-        max_objective!(opt, optimization_objective_lon)
-    else
-        error("target is not an indicator variable")
-    end
-
-    # enforce ordering of bins, f(x,g) ≤ 0
-    # for i = 1 : nbins-2
-    #     inequality_constraint!(opt, (x,g) -> x[i] - x[i+1])
-    # end
-
-    maxf, maxx, ret = optimize(opt, starting_opt_vector)
-
-    overwrite_model_params!(maxx)
-end
+#     overwrite_model_params!(maxx)
+# end
 function optimize_indicator_bins!(
     binmap::HybridDiscretizer,
     index::Int,
@@ -1587,8 +1611,6 @@ function optimize_indicator_bins!(
     staticparams::ModelStaticParams,
     data::BN_PreallocatedData
     )
-
-
 
     lin = binmap.lin
     nbins = nlabels(lin)

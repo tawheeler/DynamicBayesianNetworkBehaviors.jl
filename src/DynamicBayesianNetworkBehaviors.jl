@@ -30,6 +30,10 @@ export
     ParentFeatures,
     BN_TrainParams,
 
+    DirichletPrior,
+    UniformPrior,
+    BDeuPrior,
+
     DEFAULT_INDICATORS,
     DEFAULT_DISCRETIZERS,
 
@@ -89,6 +93,7 @@ export
 
 ##############################################################
 
+include("dirichlet_priors.jl")
 include("DBNModel.jl")
 include("behaviormodel.jl")
 include("default_params.jl")
