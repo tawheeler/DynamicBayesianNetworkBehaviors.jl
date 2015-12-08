@@ -755,13 +755,14 @@ function SmileExtra.log_bayes_score_component{I<:Integer}(
     i::Int,
     parents::AbstractVector{I},
     data::BN_PreallocatedData,
+    dirichlet_prior::DirichletPrior,
     cache::Dict{Vector{Int}, Float64}
     )
 
     if haskey(cache, parents)
         return cache[parents]
     end
-    return (cache[parents] = log_bayes_score_component(i, parents, data))
+    return (cache[parents] = log_bayes_score_component(i, parents, data, dirichlet_prior))
 end
 # function calc_bayesian_score(
 #     data::ModelData,
@@ -782,8 +783,8 @@ function calc_bayesian_score(
 
     # NOTE: this does not compute the score components for the indicator variables
 
-    log_bayes_score_component(staticparams.ind_lat, modelparams.parents_lat, data) +
-        log_bayes_score_component(staticparams.ind_lon, modelparams.parents_lon, data)
+    log_bayes_score_component(staticparams.ind_lat, modelparams.parents_lat, data, modelparams.dirichlet_prior) +
+        log_bayes_score_component(staticparams.ind_lon, modelparams.parents_lon, data, modelparams.dirichlet_prior)
 end
 function calc_discretize_score(
     binmap::AbstractDiscretizer,
@@ -885,11 +886,12 @@ function calc_component_score(
     target_parents::Vector{Int},
     target_binmap::AbstractDiscretizer,
     data::BN_PreallocatedData,
+    dirichlet_prior::DirichletPrior,
     stats::AbstractMatrix{Int}
     )
 
     calc_discretize_score(target_binmap, stats) +
-        log_bayes_score_component(target_index, target_parents, data)
+        log_bayes_score_component(target_index, target_parents, data, dirichlet_prior)
 end
 # function calc_component_score(
 #     target_index::Int,
@@ -907,11 +909,12 @@ function calc_component_score(
     target_index::Int,
     target_parents::Vector{Int},
     target_binmap::AbstractDiscretizer,
-    data::BN_PreallocatedData
+    data::BN_PreallocatedData,
+    dirichlet_prior::DirichletPrior,
     )
 
     stats = SmileExtra.statistics(target_index, target_parents, data)
-    calc_component_score(target_index, target_parents, target_binmap, data, stats)
+    calc_component_score(target_index, target_parents, target_binmap, data, dirichlet_prior, stats)
 end
 # function calc_component_score(
 #     target_index::Int,
@@ -933,12 +936,13 @@ function calc_component_score(
     target_parents::Vector{Int},
     target_binmap::AbstractDiscretizer,
     data::BN_PreallocatedData,
+    dirichlet_prior::DirichletPrior,
     score_cache::Dict{Vector{Int}, Float64}
     )
 
     stats = SmileExtra.statistics(target_index, target_parents, data)
     calc_discretize_score(target_binmap, stats) +
-        log_bayes_score_component(target_index, target_parents, data, score_cache)
+        log_bayes_score_component(target_index, target_parents, data, dirichlet_prior, score_cache)
 end
 # function calc_complete_score(
 #     data::ModelData,
@@ -1020,8 +1024,9 @@ function optimize_structure!(
     score_cache_lat = Dict{Vector{Int}, Float64}()
     score_cache_lon = Dict{Vector{Int}, Float64}()
 
-    score_lat = calc_component_score(ind_lat, parents_lat, binmap_lat, data, score_cache_lat)
-    score_lon = calc_component_score(ind_lon, parents_lon, binmap_lon, data, score_cache_lon)
+    α = modelparams.dirichlet_prior
+    score_lat = calc_component_score(ind_lat, parents_lat, binmap_lat, data, α, score_cache_lat)
+    score_lon = calc_component_score(ind_lon, parents_lon, binmap_lon, data, α, score_cache_lon)
     score = score_lat + score_lon
 
     if verbosity > 0
@@ -1045,7 +1050,7 @@ function optimize_structure!(
                 # add edge if it does not exist
                 if !chosen_lat[i]
                     new_parents = sort!(push!(copy(parents_lat), n_targets+i))
-                    new_score_diff = calc_component_score(ind_lat, new_parents, binmap_lat, data, score_cache_lat) - score_lat
+                    new_score_diff = calc_component_score(ind_lat, new_parents, binmap_lat, data, α, score_cache_lat) - score_lat
                     if new_score_diff > score_diff + BAYESIAN_SCORE_IMPROVEMENT_THRESOLD
                         selected_lat = true
                         score_diff = new_score_diff
@@ -1060,7 +1065,7 @@ function optimize_structure!(
             # remove edge if it does exist
             if !in(features[i], forced_lat)
                 new_parents = deleteat!(copy(parents_lat), idx)
-                new_score_diff = calc_component_score(ind_lat, new_parents, binmap_lat, data, score_cache_lat) - score_lat
+                new_score_diff = calc_component_score(ind_lat, new_parents, binmap_lat, data, α, score_cache_lat) - score_lat
                 if new_score_diff > score_diff + BAYESIAN_SCORE_IMPROVEMENT_THRESOLD
                     selected_lat = true
                     score_diff = new_score_diff
@@ -1075,7 +1080,7 @@ function optimize_structure!(
                 # add edge if it does not exist
                 if !chosen_lon[i]
                     new_parents = sort!(push!(copy(parents_lon), n_targets+i))
-                    new_score_diff = calc_component_score(ind_lon, new_parents, binmap_lon, data, score_cache_lon) - score_lon
+                    new_score_diff = calc_component_score(ind_lon, new_parents, binmap_lon, data, α, score_cache_lon) - score_lon
                     if new_score_diff > score_diff + BAYESIAN_SCORE_IMPROVEMENT_THRESOLD
                         selected_lat = false
                         score_diff = new_score_diff
@@ -1090,7 +1095,7 @@ function optimize_structure!(
             # remove edge if it does exist
             if !in(features[i], forced_lon)
                 new_parents = deleteat!(copy(parents_lon), idx)
-                new_score_diff = calc_component_score(ind_lon, new_parents, binmap_lon, data, score_cache_lon) - score_lon
+                new_score_diff = calc_component_score(ind_lon, new_parents, binmap_lon, data, α, score_cache_lon) - score_lon
                 if new_score_diff > score_diff + BAYESIAN_SCORE_IMPROVEMENT_THRESOLD
                     selected_lat = false
                     score_diff = new_score_diff
@@ -1104,7 +1109,7 @@ function optimize_structure!(
             # lon -> lat
             if length(parents_lat) < max_parents
                 new_parents = unshift!(copy(parents_lat), ind_lon)
-                new_score_diff = calc_component_score(ind_lat, new_parents, binmap_lat, data, score_cache_lat) - score_lat
+                new_score_diff = calc_component_score(ind_lat, new_parents, binmap_lat, data, α, score_cache_lat) - score_lat
                 if new_score_diff > score_diff + BAYESIAN_SCORE_IMPROVEMENT_THRESOLD
                     selected_lat = true
                     score_diff = new_score_diff
@@ -1115,7 +1120,7 @@ function optimize_structure!(
             # lat -> lon
             if length(parents_lon) < max_parents
                 new_parents = unshift!(copy(parents_lon), ind_lat)
-                new_score_diff = calc_component_score(ind_lon, new_parents, binmap_lon, data, score_cache_lon) - score_lon
+                new_score_diff = calc_component_score(ind_lon, new_parents, binmap_lon, data, α, score_cache_lon) - score_lon
                 if new_score_diff > score_diff + BAYESIAN_SCORE_IMPROVEMENT_THRESOLD
                     selected_lat = false
                     score_diff = new_score_diff
@@ -1126,7 +1131,7 @@ function optimize_structure!(
 
             # try edge removal
             new_parents = deleteat!(copy(parents_lat), ind_lat)
-            new_score_diff = calc_component_score(ind_lat, new_parents, binmap_lat, data, score_cache_lat) - score_lat
+            new_score_diff = calc_component_score(ind_lat, new_parents, binmap_lat, data, α, score_cache_lat) - score_lat
             if new_score_diff > score_diff + BAYESIAN_SCORE_IMPROVEMENT_THRESOLD
                 selected_lat = true
                 score_diff = new_score_diff
@@ -1136,7 +1141,7 @@ function optimize_structure!(
             # try edge reversal (lat -> lon)
             if length(parents_lon) < max_parents
                 new_parents = unshift!(copy(parents_lon), ind_lat)
-                new_score_diff = calc_component_score(ind_lon, new_parents, binmap_lon, data, score_cache_lon) - score_lon
+                new_score_diff = calc_component_score(ind_lon, new_parents, binmap_lon, data, α, score_cache_lon) - score_lon
                 if new_score_diff > score_diff + BAYESIAN_SCORE_IMPROVEMENT_THRESOLD
                     selected_lat = false
                     score_diff = new_score_diff
@@ -1147,7 +1152,7 @@ function optimize_structure!(
 
             # try edge removal
             new_parents = deleteat!(copy(parents_lon), ind_lat)
-            new_score_diff = calc_component_score(ind_lon, new_parents, binmap_lon, data, score_cache_lon) - score_lon
+            new_score_diff = calc_component_score(ind_lon, new_parents, binmap_lon, data, α, score_cache_lon) - score_lon
             if new_score_diff > score_diff + BAYESIAN_SCORE_IMPROVEMENT_THRESOLD
                 selected_lat = false
                 score_diff = new_score_diff
@@ -1157,7 +1162,7 @@ function optimize_structure!(
             # try edge reversal (lon -> lat)
             if length(parents_lat) < max_parents
                 new_parents = unshift!(copy(parents_lat), ind_lon)
-                new_score_diff = calc_component_score(ind_lat, new_parents, binmap_lat, data, score_cache_lat) - score_lat
+                new_score_diff = calc_component_score(ind_lat, new_parents, binmap_lat, data, α, score_cache_lat) - score_lat
                 if new_score_diff > score_diff + BAYESIAN_SCORE_IMPROVEMENT_THRESOLD
                     selected_lat = true
                     score_diff = new_score_diff
@@ -1206,6 +1211,7 @@ function optimize_target_bins!(
     binmaps = modelparams.binmaps
     parents_lat = modelparams.parents_lat
     parents_lon = modelparams.parents_lon
+    α = modelparams.dirichlet_prior
 
     ind_lat = staticparams.ind_lat
     ind_lon = staticparams.ind_lon
@@ -1260,8 +1266,8 @@ function optimize_target_bins!(
         overwrite_model_params!(x)
 
         # compute score
-        score = calc_component_score(ind_lat, parents_lat, binmap_lat, data) +
-                calc_component_score(ind_lon, parents_lon, binmap_lon, data)
+        score = calc_component_score(ind_lat, parents_lat, binmap_lat, α, data) +
+                calc_component_score(ind_lon, parents_lon, binmap_lon, α, data)
 
         # println(x, " -> ", score)
 
@@ -1408,6 +1414,7 @@ function optimize_indicator_bins!(
 
     bin_lo, bin_hi = extrema(binmap)
 
+    α = modelparams.dirichlet_prior
     binmaps = modelparams.binmaps
     ind_lat = staticparams.ind_lat
     ind_lon = staticparams.ind_lon
@@ -1446,8 +1453,8 @@ function optimize_indicator_bins!(
 
         overwrite_model_params!(x)
 
-        score = calc_component_score(ind_lat, parents_lat, binmap_lat, data) +
-                calc_component_score(ind_lon, parents_lon, binmap_lon, data)
+        score = calc_component_score(ind_lat, parents_lat, binmap_lat, α, data) +
+                calc_component_score(ind_lon, parents_lon, binmap_lon, α, data)
 
         score
     end
@@ -1459,7 +1466,7 @@ function optimize_indicator_bins!(
 
         overwrite_model_params!(x)
 
-        calc_component_score(ind_lat, parents_lat, binmap_lat, data)
+        calc_component_score(ind_lat, parents_lat, binmap_lat, α, data)
     end
     function optimization_objective_lon(x::Vector, grad::Vector)
         if length(grad) > 0
@@ -1469,7 +1476,7 @@ function optimize_indicator_bins!(
 
         overwrite_model_params!(x)
 
-        calc_component_score(ind_lon, parents_lon, binmap_lon, data)
+        calc_component_score(ind_lon, parents_lon, binmap_lon, α, data)
     end
 
     n = length(starting_opt_vector)
@@ -1618,6 +1625,7 @@ function optimize_indicator_bins!(
         return nothing
     end
 
+    α = modelparams.dirichlet_prior
     bin_lo, bin_hi = extrema(lin)
     binmaps = modelparams.binmaps
     ind_lat = staticparams.ind_lat
@@ -1658,8 +1666,8 @@ function optimize_indicator_bins!(
 
         overwrite_model_params!(x)
 
-        score = calc_component_score(ind_lat, parents_lat, binmap_lat, data) +
-                calc_component_score(ind_lon, parents_lon, binmap_lon, data)
+        score = calc_component_score(ind_lat, parents_lat, binmap_lat, α, data) +
+                calc_component_score(ind_lon, parents_lon, binmap_lon, α, data)
 
         score
     end
@@ -1671,7 +1679,7 @@ function optimize_indicator_bins!(
 
         overwrite_model_params!(x)
 
-        calc_component_score(ind_lat, parents_lat, binmap_lat, data)
+        calc_component_score(ind_lat, parents_lat, binmap_lat, α, data)
     end
     function optimization_objective_lon(x::Vector, grad::Vector)
         if length(grad) > 0
@@ -1681,7 +1689,7 @@ function optimize_indicator_bins!(
 
         overwrite_model_params!(x)
 
-        calc_component_score(ind_lon, parents_lon, binmap_lon, data)
+        calc_component_score(ind_lon, parents_lon, binmap_lon, α, data)
     end
 
     n = length(starting_opt_vector)
