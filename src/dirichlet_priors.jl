@@ -14,7 +14,7 @@ type BDeuPrior <: DirichletPrior
     BDeuPrior(x::Float64=1.0) = new(x)
 end
 
-function Base.get{I<:Integer, J<:Integer, K<:Integer}(::UniformPrior,
+function Base.get{I<:Integer, J<:Integer}(::UniformPrior,
     var_index::Integer,
     nintervals::AbstractVector{I}, # [nvars]
     parents::AbstractVector{J},    # [nvars]
@@ -26,7 +26,7 @@ function Base.get{I<:Integer, J<:Integer, K<:Integer}(::UniformPrior,
 
     fill(α, r, q)::Matrix{Float64}
 end
-function Base.get{I<:Integer, J<:Integer, K<:Integer}(p::BDeuPrior,
+function Base.get{I<:Integer, J<:Integer}(p::BDeuPrior,
     var_index::Integer,
     nintervals::AbstractVector{I}, # [nvars]
     parents::AbstractVector{J},    # [nvars]
