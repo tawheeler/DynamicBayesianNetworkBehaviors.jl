@@ -3,11 +3,12 @@ const NLOPT_XTOL_REL = 1e-4
 const BAYESIAN_SCORE_IMPROVEMENT_THRESOLD = 1e-1
 
 type ParentFeatures
-    lat :: Vector{AbstractFeature}
-    lon :: Vector{AbstractFeature}
+    lat :: Union{Vector{AbstractFeature},Vector{FeaturesNew.AbstractFeature}}
+    lon :: Union{Vector{AbstractFeature},Vector{FeaturesNew.AbstractFeature}}
 
     ParentFeatures() = new(AbstractFeature[], AbstractFeature[])
     ParentFeatures(lat::Vector{AbstractFeature}, lon::Vector{AbstractFeature}) = new(lat, lon)
+    ParentFeatures(lat::Vector{FeaturesNew.AbstractFeature}, lon::Vector{FeaturesNew.AbstractFeature}) = new(lat, lon)
 end
 
 type GraphLearningResult
@@ -80,7 +81,7 @@ immutable ModelParams
     # static params
     ind_lat::Int
     ind_lon::Int
-    features::Vector{AbstractFeature}
+    features::Union{Vector{AbstractFeature},Vector{FeaturesNew.AbstractFeature}}
     dirichlet_prior::DirichletPrior
 end
 immutable ModelData
@@ -100,7 +101,7 @@ type BN_TrainParams <: AbstractVehicleBehaviorTrainParams
     starting_structure::ParentFeatures
     forced::ParentFeatures
     targetset::ModelTargets
-    indicators::Vector{AbstractFeature}
+    indicators::Union{Vector{AbstractFeature},Vector{FeaturesNew.AbstractFeature}}
     discretizerdict::Dict{Symbol, AbstractDiscretizer}
 
     dirichlet_prior::DirichletPrior
@@ -121,7 +122,53 @@ type BN_TrainParams <: AbstractVehicleBehaviorTrainParams
         starting_structure::ParentFeatures=ParentFeatures(),
         forced::ParentFeatures=ParentFeatures(),
         targetset::ModelTargets=ModelTargets(FUTUREDESIREDANGLE_250MS, FUTUREACCELERATION_250MS),
-        indicators::Vector{AbstractFeature}=copy(DEFAULT_INDICATORS),
+        indicators::Union{Vector{AbstractFeature},Vector{FeaturesNew.AbstractFeature}}=copy(DEFAULT_INDICATORS),
+        discretizerdict::Dict{Symbol, AbstractDiscretizer}=deepcopy(DEFAULT_DISCRETIZERS),
+
+        dirichlet_prior::DirichletPrior=UniformPrior(),
+
+        verbosity::Int=0,
+        ncandidate_bins::Int=20,
+        max_parents::Int=6,
+        nbins_lat::Int=7,
+        nbins_lon::Int=7,
+
+        preoptimize_target_bins::Bool=true,
+        preoptimize_indicator_bins::Bool=true,
+        optimize_structure::Bool=true,
+        optimize_target_bins::Bool=true,
+        optimize_parent_bins::Bool=true,
+        )
+
+        retval = new()
+
+        retval.starting_structure = starting_structure
+        retval.forced = forced
+        retval.targetset = targetset
+        retval.indicators = indicators
+        retval.discretizerdict = discretizerdict
+
+        retval.dirichlet_prior = dirichlet_prior
+
+        retval.verbosity = verbosity
+        retval.ncandidate_bins = ncandidate_bins
+        retval.max_parents = max_parents
+        retval.nbins_lat = nbins_lat
+        retval.nbins_lon = nbins_lon
+
+        retval.preoptimize_target_bins = preoptimize_target_bins
+        retval.preoptimize_indicator_bins = preoptimize_indicator_bins
+        retval.optimize_structure = optimize_structure
+        retval.optimize_target_bins = optimize_target_bins
+        retval.optimize_parent_bins = optimize_parent_bins
+
+        retval
+    end
+    function BN_TrainParams(;
+        starting_structure::ParentFeatures=ParentFeatures(),
+        forced::ParentFeatures=ParentFeatures(),
+        targetset::ModelTargets=ModelTargets(FUTUREDESIREDANGLE_250MS, FUTUREACCELERATION_250MS),
+        indicators::Union{Vector{AbstractFeature},Vector{FeaturesNew.AbstractFeature}}=copy(DEFAULT_INDICATORS),
         discretizerdict::Dict{Symbol, AbstractDiscretizer}=deepcopy(DEFAULT_DISCRETIZERS),
 
         dirichlet_prior::DirichletPrior=UniformPrior(),
@@ -164,6 +211,8 @@ type BN_TrainParams <: AbstractVehicleBehaviorTrainParams
         retval
     end
 end
+
+
 type BN_PreallocatedData <: AbstractVehicleBehaviorPreallocatedData
     #=
     Allocates the full size of continuous and discrete corresponding to the full dataset
@@ -187,9 +236,27 @@ type BN_PreallocatedData <: AbstractVehicleBehaviorPreallocatedData
 
         new(continuous, discrete, bincounts, rowcount)
     end
+    function BN_PreallocatedData(dset::ModelTrainingData2, params::BN_TrainParams)
+
+        nsamples = nrow(dset.dataframe)
+        nfeatures = length(params.indicators) + 2
+
+        continuous = Array(Float64, nsamples, nfeatures)
+        discrete = Array(Int, nsamples, nfeatures)
+        bincounts = Array(Int, nfeatures)
+        rowcount = 0
+
+        new(continuous, discrete, bincounts, rowcount)
+    end
 end
 function preallocate_learning_data(
     dset::ModelTrainingData,
+    params::BN_TrainParams)
+
+    BN_PreallocatedData(dset, params)
+end
+function preallocate_learning_data(
+    dset::ModelTrainingData2,
     params::BN_TrainParams)
 
     BN_PreallocatedData(dset, params)
@@ -381,6 +448,11 @@ function _feature_indeces_in_net(
 end
 
 function get_parent_indeces{F<:AbstractFeature}(parents::ParentFeatures, features::Vector{F})
+    parents_lat = find(f->in(f, parents.lat), features)
+    parents_lon = find(f->in(f, parents.lon), features)
+    (parents_lat, parents_lon)
+end
+function get_parent_indeces{F<:FeaturesNew.AbstractFeature}(parents::ParentFeatures, features::Vector{F})
     parents_lat = find(f->in(f, parents.lat), features)
     parents_lon = find(f->in(f, parents.lon), features)
     (parents_lat, parents_lon)
@@ -1527,6 +1599,277 @@ function train(
             disc = LinearDiscretizer(collect(linspace(extremes[1], extremes[2], nbins+1)))
             modelparams.binmaps[ind_lat] = disc
         end
+
+        for (i,x) in enumerate(datavec)
+            @assert(extremes[1] ≤ x ≤ extremes[2])
+        end
+        copy!(disc.binedges, optimize_categorical_binning!(datavec, nbins, extremes, ncandidate_bins))
+
+        ###################
+        # lon
+
+        for i in 1 : rowcount
+            datavec[i] = preallocated_data.continuous[i,ind_lon]
+        end
+
+        disc = modelparams.binmaps[ind_lon]::LinearDiscretizer
+        extremes = (disc.binedges[1], disc.binedges[end])
+        nbins = nlabels(disc)
+        if nbins_lon != -1
+            nbins = nbins_lon
+            disc = LinearDiscretizer(collect(linspace(extremes[1], extremes[2], nbins+1)))
+            modelparams.binmaps[ind_lon] = disc
+        end
+
+        for (i,x) in enumerate(datavec)
+            if !(extremes[1] ≤ x ≤ extremes[2])
+                println(extremes[1], " ≤ ", x, " ≤ ", extremes[2])
+            end
+            @assert(extremes[1] ≤ x ≤ extremes[2])
+        end
+        copy!(disc.binedges, optimize_categorical_binning!(datavec, nbins, extremes, ncandidate_bins))
+
+        if verbosity > 0
+            toc()
+        end
+    end
+
+    # is_indicator_valid = trues(length(indicators))
+    if preoptimize_indicator_bins
+
+        if verbosity > 0
+            println("Optimizing Indicator Bins"); tic()
+        end
+
+        for i in 3 : length(features) # skip the target features
+            disc2 = modelparams.binmaps[i]
+            if isa(disc2, LinearDiscretizer)
+
+                for j in 1 : rowcount
+                    datavec[j] = preallocated_data.continuous[j,ind_lon]
+                end
+
+                nbins = nlabels(disc2)
+                extremes = (disc2.binedges[1], disc2.binedges[end])
+                for (k,x) in enumerate(datavec)
+                    datavec[k] = clamp(x, extremes[1], extremes[2])
+                end
+                copy!(disc2.binedges, optimize_categorical_binning!(datavec, nbins, extremes, ncandidate_bins))
+
+            elseif isa(disc2, HybridDiscretizer)
+
+                for j in 1 : rowcount
+                    datavec[j] = preallocated_data.continuous[j,ind_lon]
+                end
+
+                sort!(datavec)
+                k = findfirst(value->isinf(value) || isnan(value), datavec)
+                if k != 1 # skip if the entire array is Inf (such as if we only have freeflow data, d_x_front will be all Inf)
+                    if k == 0
+                        k = length(datavec)
+                    else
+                        k -= 1
+                    end
+                    nbins = nlabels(disc2.lin)
+                    extremes = (disc2.lin.binedges[1], disc2.lin.binedges[end])
+                    for j in 1 : k
+                        datavec[j] = clamp(datavec[j], extremes[1], extremes[2])
+                    end
+                    copy!(disc2.lin.binedges, optimize_categorical_binning!(datavec[1:k], nbins, extremes, ncandidate_bins))
+                # else
+                #     is_indicator_valid[i] = false
+                end
+            end
+        end
+
+        if verbosity > 0
+            toc()
+        end
+    end
+
+    ############################################################################
+    # Discretize preallocated_data.continuous → preallocated_data.discrete
+    # Compute bincounts
+
+    for (j,dmap) in enumerate(modelparams.binmaps)
+        preallocated_data.bincounts[j] = nlabels(dmap)
+        for i in 1 : preallocated_data.rowcount
+            value = preallocated_data.continuous[i,j]
+            preallocated_data.discrete[i,j] = encode(dmap, value)
+        end
+    end
+
+    ############################################################################
+
+    starttime = time()
+    iter = 0
+    score = calc_complete_score(preallocated_data, modelparams)
+
+    if optimize_structure || optimize_target_bins || optimize_parent_bins
+        score_diff = Inf
+        SCORE_DIFF_THRESHOLD = 10.0
+        while score_diff > SCORE_DIFF_THRESHOLD
+
+            iter += 1
+            verbosity == 0 || @printf("\nITER %d: %.4f (Δ%.4f) t=%.0f\n", iter, score, score_diff, time()-starttime)
+
+            if optimize_structure
+                optimize_structure!(modelparams, preallocated_data, forced=(forced_lat, forced_lon), max_parents=max_parents, verbosity=verbosity)
+            end
+            if optimize_target_bins
+                optimize_target_bins!(modelparams, preallocated_data)
+            end
+            if optimize_parent_bins
+                optimize_parent_bins!(modelparams, preallocated_data)
+            end
+
+            score_new = calc_complete_score(preallocated_data, modelparams)
+            score_diff = score_new - score
+            score = score_new
+        end
+    end
+
+    if verbosity > 0
+        println("\nELAPSED TIME: ", time()-starttime, "s")
+        println("FINAL: ", score)
+
+        println("\nStructure:")
+        println("lat: ", map(f->symbol(f), features[modelparams.parents_lat]))
+        println("lon: ", map(f->symbol(f), features[modelparams.parents_lon]))
+
+        println("\nTarget Bins:")
+        println("lat: ", modelparams.binmaps[ind_lat].binedges)
+        println("lon: ", modelparams.binmaps[ind_lon].binedges)
+
+        println("\nIndicator Bins:")
+        if !isempty(modelparams.parents_lat) && !isempty(modelparams.parents_lon)
+            for parent_index in unique([modelparams.parents_lat, modelparams.parents_lon])
+                sym = symbol(features[parent_index])
+                if isa(modelparams.binmaps[parent_index], LinearDiscretizer)
+                    println(sym, "\t", modelparams.binmaps[parent_index].binedges)
+                elseif isa(modelparams.binmaps[parent_index], HybridDiscretizer)
+                    println(sym, "\t", modelparams.binmaps[parent_index].lin.binedges)
+                end
+            end
+        else
+            println("[empty]")
+        end
+    end
+
+    binmapdict = Dict{Symbol, AbstractDiscretizer}()
+    for (b,f) in zip(modelparams.binmaps, modelparams.features)
+        binmapdict[symbol(f)] = b
+    end
+
+    res = GraphLearningResult("trained", modelparams.features, modelparams.ind_lat, modelparams.ind_lon,
+                              modelparams.parents_lat, modelparams.parents_lon, NaN,
+                              preallocated_data.bincounts, preallocated_data.discrete[1:preallocated_data.rowcount,:]')
+    model = dbnmodel(get_emstats(res, binmapdict))
+
+    DynamicBayesianNetworkBehavior(model, DBNSimParams(), DBNSimParams())
+end
+function train(
+    training_data::ModelTrainingData2,
+    preallocated_data::BN_PreallocatedData,
+    params::BN_TrainParams,
+    fold::Int,
+    fold_assignment::FoldAssignment,
+    match_fold::Bool,
+    )
+
+    starting_structure = params.starting_structure
+    forced = params.forced
+    targetset = params.targetset
+    indicators = (params.indicators)::Vector{FeaturesNew.AbstractFeature}
+    discretizerdict = params.discretizerdict
+
+    verbosity = params.verbosity
+    ncandidate_bins = params.ncandidate_bins
+    max_parents = params.max_parents
+    nbins_lat = params.nbins_lat
+    nbins_lon = params.nbins_lon
+
+    preoptimize_target_bins = params.preoptimize_target_bins
+    preoptimize_indicator_bins = params.preoptimize_indicator_bins
+    optimize_structure = params.optimize_structure
+    optimize_target_bins = params.optimize_target_bins
+    optimize_parent_bins = params.optimize_parent_bins
+
+    ####################
+
+    targets = [FeaturesNew.FUTUREDESIREDANGLE, FeaturesNew.FUTUREACCELERATION]
+    features = [targets; indicators]
+
+    # TODO(tim): fix this
+    ind_lat = 1
+    ind_lon = 2
+    @assert(ind_lat  != 0)
+    @assert(ind_lon  != 0)
+
+    parents_lat, parents_lon = get_parent_indeces(starting_structure, features)
+    forced_lat, forced_lon = get_parent_indeces(forced, features)
+
+    parents_lat = sort(unique([parents_lat; forced_lat]))
+    parents_lon = sort(unique([parents_lon; forced_lon]))
+
+    modelparams = ModelParams(map(f->discretizerdict[symbol(f)], features), parents_lat, parents_lon,
+                              ind_lat, ind_lon, features, params.dirichlet_prior)
+
+    ############################################################
+    # pull the dataset
+    #  - drop invalid discretization rows
+    #  - check that everything is within the folds
+
+    @assert(length(fold_assignment.frame_assignment) == nrow(training_data.dataframe))
+
+    rowcount = 0
+    for (i,a) in enumerate(fold_assignment.frame_assignment)
+        if is_in_fold(fold, a, match_fold)
+            rowcount += 1
+            for (j,f) in enumerate(features)
+                sym = symbol(f)
+                dmap = discretizerdict[sym]
+                value = training_data.dataframe[i, sym]::Float64
+                @assert(!isnan(value))
+                if supports_encoding(dmap, value) &&
+                 !(isinf(value) && (j == ind_lat || j == ind_lon))
+                    preallocated_data.continuous[rowcount, j] = value
+                else
+                    rowcount -= 1
+                    break
+                end
+            end
+        end
+    end
+    preallocated_data.rowcount = rowcount
+
+    ############################################################
+
+    datavec = Array(Float64, rowcount)
+    if preoptimize_target_bins
+        if verbosity > 0
+            println("Optimizing Target Bins"); tic()
+        end
+
+        ###################
+        # lat
+
+        for i in 1 : rowcount
+            datavec[i] = preallocated_data.continuous[i,ind_lat]
+        end
+
+        disc::LinearDiscretizer = modelparams.binmaps[ind_lat]
+        extremes = (disc.binedges[1], disc.binedges[end])
+        nbins = nlabels(disc)
+        if nbins_lat != -1
+            nbins = nbins_lat
+            disc = LinearDiscretizer(collect(linspace(extremes[1], extremes[2], nbins+1)))
+            modelparams.binmaps[ind_lat] = disc
+        end
+
+        println(features[ind_lat])
+        println(modelparams.binmaps[ind_lat])
+        println(extrema(datavec))
 
         for (i,x) in enumerate(datavec)
             @assert(extremes[1] ≤ x ≤ extremes[2])
