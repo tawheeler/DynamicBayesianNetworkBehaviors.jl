@@ -97,6 +97,7 @@ include("dirichlet_priors.jl")
 include("DBNModel.jl")
 include("behaviormodel.jl")
 include("default_params.jl")
+include("graph_learning_result.jl")
 include("learning.jl")
 
 end # module

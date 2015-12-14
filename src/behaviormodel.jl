@@ -24,7 +24,10 @@ type DynamicBayesianNetworkBehavior <: AbstractVehicleBehavior
     simparams_lat :: DBNSimParams
     simparams_lon :: DBNSimParams
 
-    indicators    :: Vector{AbstractFeature}
+    # TODO(tim): remove indicators once we switch completely to RunLogs
+    indicators    :: Union{Vector{AbstractFeature}, Vector{FeaturesNew.AbstractFeature}}
+    extractor     :: FeaturesNew.FeatureSubsetExtractor
+    # preprocess :: FeaturesNew.DataPreprocessor
     ordering      :: Vector{Int}
 
     # preallocated memory
@@ -83,6 +86,11 @@ type DynamicBayesianNetworkBehavior <: AbstractVehicleBehavior
         retval.temp_binprobs_lat = deepcopy(retval.binprobs_lat)
         retval.temp_binprobs_lon = deepcopy(retval.binprobs_lon)
 
+        if isa(f_lat, FeaturesNew.Feature_FutureAcceleration)
+            x = Array(Float64, length(retval.indicators))
+            retval.extractor = FeaturesNew.FeatureSubsetExtractor(x, retval.indicators)
+        end
+
         retval
     end
 end
@@ -113,6 +121,19 @@ end
 
 sample!(behavior::DynamicBayesianNetworkBehavior, assignment::Dict{Symbol, Int}) = sample!(behavior.model, assignment, behavior.ordering)
 sample_and_lopP!(behavior::DynamicBayesianNetworkBehavior, assignment::Dict{Symbol, Int}, logPs::Dict{Symbol, Float64}=Dict{Symbol, Float64}()) = sample!(behavior.model, assignment, logPs, behavior.ordering)
+
+function _copy_extracted_into_obs!(behavior::DynamicBayesianNetworkBehavior)
+
+    extractor = behavior.extractor
+
+    # copy them over into the observation dict
+    for (i,f) in enumerate(extractor.indicators)
+        sym = symbol(f)
+        behavior.observations[sym] = extractor.x[i]
+    end
+
+    behavior
+end
 
 function select_action(
     basics::FeatureExtractBasicsPdSet,
@@ -157,6 +178,55 @@ function select_action(
 
     # action_lat = clamp(action_lat, -0.05, 0.05) # TODO(tim): remove this
     # action_lon = clamp(action_lon, -3.0, 1.5) # TODO(tim): remove this
+
+    (action_lat, action_lon)
+end
+function select_action(
+    behavior::DynamicBayesianNetworkBehavior,
+    runlog::RunLog,
+    sn::StreetNetwork,
+    colset::UInt,
+    frame::Int
+    )
+
+    model = behavior.model
+    symbol_lat = behavior.symbol_lat
+    symbol_lon = behavior.symbol_lon
+    extractor = behavior.extractor
+    # preprocess = behavior.preprocess
+
+    simparams_lat = behavior.simparams_lat
+    simparams_lon = behavior.simparams_lon
+    samplemethod_lat = simparams_lat.sampling_scheme
+    samplemethod_lon = simparams_lon.sampling_scheme
+    smoothing_lat = simparams_lat.smoothing
+    smoothing_lon = simparams_lon.smoothing
+    smoothcounts_lat = simparams_lat.smoothing_counts
+    smoothcounts_lon = simparams_lon.smoothing_counts
+
+    bmap_lat = model.discretizers[behavior.ind_lat_in_discretizers]
+    bmap_lon = model.discretizers[behavior.ind_lon_in_discretizers]
+
+    observations = behavior.observations
+    assignment = behavior.assignment
+
+    FeaturesNew.observe!(extractor, runlog, sn, colset, frame)
+    # FeaturesNew.process!(proprocess) # NOTE (tim): this also modifies extractor.x
+    _copy_extracted_into_obs!(behavior)
+
+    encode!(assignment, model, observations)
+    sample!(model, assignment, behavior.ordering)
+
+    bin_lat = assignment[symbol_lat]
+    bin_lon = assignment[symbol_lon]
+
+    action_lat = decode(bmap_lat, bin_lat, samplemethod_lat)
+    action_lon = decode(bmap_lon, bin_lon, samplemethod_lon)
+
+    @assert(!isinf(action_lat))
+    @assert(!isinf(action_lon))
+    @assert(!isnan(action_lat))
+    @assert(!isnan(action_lon))
 
     (action_lat, action_lon)
 end
@@ -253,12 +323,13 @@ function calc_action_loglikelihood(
 end
 function calc_action_loglikelihood(
     behavior::DynamicBayesianNetworkBehavior,
-    features::DataFrame,
-    frameind::Integer,
+    runlog::RunLog,
+    sn::StreetNetwork,
+    colset::UInt,
+    frame::Int,
+    action_lat::Float64,
+    action_lon::Float64,
     )
-
-    action_lat = features[frameind, symbol(FUTUREDESIREDANGLE_250MS)]::Float64
-    action_lon = features[frameind, symbol(FUTUREACCELERATION_250MS)]::Float64
 
     model = behavior.model
     symbol_lat = behavior.symbol_lat
@@ -266,15 +337,49 @@ function calc_action_loglikelihood(
     bmap_lat = model.discretizers[findfirst(model.BN.names, symbol_lat)]
     bmap_lon = model.discretizers[findfirst(model.BN.names, symbol_lon)]
 
+    if min(bmap_lat) ≤ action_lat ≤ max(bmap_lat) &&
+       min(bmap_lon) ≤ action_lon ≤ max(bmap_lon)
 
-    # action_lat = clamp(action_lat, min(bmap_lat), max(bmap_lat))
-    # action_lon = clamp(action_lon, min(bmap_lon), max(bmap_lon))
+        # observe the features
+        FeaturesNew.observe!(behavior.extractor, runlog, sn, colset, frame)
+        # FeaturesNew.process!(behavior.proprocess) # NOTE (tim): this also modifies extractor.x
+        _copy_extracted_into_obs!(behavior)
+
+        _calc_action_loglikelihood(behavior, action_lat, action_lon)
+    else
+        print_with_color(:red, STDOUT, "\nDynamicBayesianNetworkBehaviors calc_log_prob: HIT\n")
+        print_with_color(:red, STDOUT, "validfind: $validfind\n")
+        print_with_color(:red, STDOUT, "$(min(bmap_lat))  $action_lat $(max(bmap_lat))\n")
+        print_with_color(:red, STDOUT, "$(min(bmap_lon))  $action_lon $(max(bmap_lon))\n")
+        -Inf
+    end
+end
+function calc_action_loglikelihood(
+    behavior::DynamicBayesianNetworkBehavior,
+    features::DataFrame,
+    frameind::Integer,
+    )
+
+    action_lat = features[frameind, behavior.symbol_lat]::Float64
+    action_lon = features[frameind, behavior.symbol_lon]::Float64
+
+    model = behavior.model
+    symbol_lat = behavior.symbol_lat
+    symbol_lon = behavior.symbol_lon
+    bmap_lat = model.discretizers[findfirst(model.BN.names, symbol_lat)]
+    bmap_lon = model.discretizers[findfirst(model.BN.names, symbol_lon)]
 
     if min(bmap_lat) ≤ action_lat ≤ max(bmap_lat) &&
        min(bmap_lon) ≤ action_lon ≤ max(bmap_lon)
 
-        for name in keys(behavior.observations)
-            behavior.observations[name] = features[frameind, name]
+        if isdefined(behavior, :extractor)
+            frame = frameind
+            FeaturesNew.observe!(behavior.extractor, features, frame)
+            _copy_extracted_into_obs!(behavior)
+        else
+            for name in keys(behavior.observations)
+                behavior.observations[name] = features[frameind, name]
+            end
         end
 
         _calc_action_loglikelihood(behavior, action_lat, action_lon)

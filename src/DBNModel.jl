@@ -1,17 +1,17 @@
 immutable DBNModel
     BN            :: BayesNet
     statsvec      :: Vector{Matrix{Float64}} # each matrix is [r×q], nvar_instantiations × nparent_instantiations
-    features      :: Vector{AbstractFeature}
+    features      :: Union{Vector{AbstractFeature},Vector{FeaturesNew.AbstractFeature}}
     discretizers  :: Vector{AbstractDiscretizer}
     istarget      :: BitVector # whether a feature is a target feature
 end
 
-function dbnmodel{R<:Real, D<:AbstractDiscretizer, F<:AbstractFeature, G<:AbstractFeature}(
+function dbnmodel{R<:Real, D<:AbstractDiscretizer}(
     BN:: BayesNet,
     statsvec::Vector{Matrix{R}},
     discretizerdict::Dict{Symbol, D},
-    targets::Vector{F},
-    indicators::Vector{G}
+    targets::Vector{AbstractFeature},
+    indicators::Vector{AbstractFeature}
     )
 
     features = AbstractFeature[symbol2feature(sym) for sym in BN.names]
@@ -28,12 +28,34 @@ function dbnmodel{R<:Real, D<:AbstractDiscretizer, F<:AbstractFeature, G<:Abstra
     statsvec_float = convert(Vector{Matrix{Float64}}, statsvec)
     DBNModel(BN, statsvec_float, features, discretizers, istarget)
 end
-function dbnmodel{R<:Real, D<:AbstractDiscretizer, F<:AbstractFeature, G<:AbstractFeature}(
+function dbnmodel{R<:Real, D<:AbstractDiscretizer}(
+    BN:: BayesNet,
+    statsvec::Vector{Matrix{R}},
+    discretizerdict::Dict{Symbol, D},
+    targets::Vector{FeaturesNew.AbstractFeature},
+    indicators::Vector{FeaturesNew.AbstractFeature}
+    )
+
+    features = FeaturesNew.AbstractFeature[FeaturesNew.symbol2feature(sym) for sym in BN.names]
+    discretizers = AbstractDiscretizer[discretizerdict[sym] for sym in BN.names]
+    istarget = falses(length(features))
+    for (i,f) in enumerate(features)
+        if in(f, targets)
+            istarget[i] = true
+        elseif !in(f, indicators)
+            error("Feature not in targets or indicators")
+        end
+    end
+
+    statsvec_float = convert(Vector{Matrix{Float64}}, statsvec)
+    DBNModel(BN, statsvec_float, features, discretizers, istarget)
+end
+function dbnmodel{R<:Real, D<:AbstractDiscretizer}(
     BN::BayesNet,
     statsvec::Vector{Matrix{R}},
     discretizers::Vector{D},
-    targets::Vector{F},
-    indicators::Vector{G}
+    targets::Vector{AbstractFeature},
+    indicators::Vector{AbstractFeature},
     )
 
     features = AbstractFeature[symbol2feature(sym) for sym in BN.names]
@@ -49,12 +71,44 @@ function dbnmodel{R<:Real, D<:AbstractDiscretizer, F<:AbstractFeature, G<:Abstra
     statsvec_float = convert(Vector{Matrix{Float64}}, statsvec)
     DBNModel(BN, statsvec_float, features, discretizers, istarget)
 end
-function dbnmodel{R<:Real, D<:AbstractDiscretizer, F<:AbstractFeature, G<:AbstractFeature}(
+function dbnmodel{R<:Real, D<:AbstractDiscretizer}(
+    BN::BayesNet,
+    statsvec::Vector{Matrix{R}},
+    discretizers::Vector{D},
+    targets::Vector{FeaturesNew.AbstractFeature},
+    indicators::Vector{FeaturesNew.AbstractFeature},
+    )
+
+    features = FeaturesNew.AbstractFeature[symbol2feature(sym) for sym in BN.names]
+    istarget = falses(length(features))
+    for (i,f) in enumerate(features)
+        if in(f, targets)
+            istarget[i] = true
+        elseif !in(f, indicators)
+            error("Feature $(symbol(f)) neither in targets nor indicators")
+        end
+    end
+
+    statsvec_float = convert(Vector{Matrix{Float64}}, statsvec)
+    DBNModel(BN, statsvec_float, features, discretizers, istarget)
+end
+function dbnmodel{R<:Real, D<:AbstractDiscretizer}(
     adj::BitMatrix, # adj[i,j] = true means i → j
     statsvec::Vector{Matrix{R}},
     discretizerdict::Dict{Symbol, D},
-    targets::Vector{F},
-    indicators::Vector{G}
+    targets::Vector{AbstractFeature},
+    indicators::Vector{AbstractFeature},
+    )
+
+    BN = build_bn(statsvec, targets, indicators, adj)
+    dbnmodel(BN, statsvec, discretizerdict, targets, indicators)
+end
+function dbnmodel{R<:Real, D<:AbstractDiscretizer}(
+    adj::BitMatrix, # adj[i,j] = true means i → j
+    statsvec::Vector{Matrix{R}},
+    discretizerdict::Dict{Symbol, D},
+    targets::Vector{FeaturesNew.AbstractFeature},
+    indicators::Vector{FeaturesNew.AbstractFeature},
     )
 
     BN = build_bn(statsvec, targets, indicators, adj)
@@ -68,23 +122,93 @@ function dbnmodel(modelstats::Dict{AbstractString, Any})
     stats      = modelstats["statistics"]
     adj        = modelstats["adjacency"] # adj[i,j] = true means i → j
 
-    # println("targets:    ", targets)
-    # println("indicators: ", indicators)
-    # println("adj:        ", adj)
-    # println("len(stats): ", length(stats))
-
-    dbnmodel(adj, stats, discretizerdict, convert(Vector{AbstractFeature}, targets),
-                        convert(Vector{AbstractFeature}, indicators))
+    if isa(indicators[1], AbstractFeature)
+        dbnmodel(adj, stats, discretizerdict, convert(Vector{AbstractFeature}, targets),
+                            convert(Vector{AbstractFeature}, indicators))
+    else
+        dbnmodel(adj, stats, discretizerdict, convert(Vector{FeaturesNew.AbstractFeature}, targets),
+                            convert(Vector{FeaturesNew.AbstractFeature}, indicators))
+    end
 end
 function dbnmodel(modelpstats_file::AbstractString)
     emstats = load(modelpstats_file)
     dbnmodel(emstats)
 end
 
-function build_bn{R<:Real, F<:AbstractFeature, G<:AbstractFeature}(
+function build_bn{R<:Real}(
     statsvec   :: Vector{Matrix{R}},
-    targets    :: Vector{F},
-    indicators :: Vector{G}, # technically all of the non-target indicators
+    targets    :: Vector{FeaturesNew.AbstractFeature},
+    indicators :: Vector{FeaturesNew.AbstractFeature}, # technically all of the non-target indicators
+    adj        :: BitMatrix
+    )
+
+    @assert(size(adj,1) == size(adj,2)) # is square
+
+    n_targets = length(targets)
+    n_indicators = length(indicators)
+
+    bnnames = Array(Symbol, n_targets + n_indicators)
+    for (i,f) in enumerate(targets)
+        bnnames[i] = symbol(f)
+    end
+    for (i,f) in enumerate(indicators)
+        bnnames[i+n_targets] = symbol(f)
+    end
+
+    @assert(length(unique(bnnames)) == length(bnnames))
+    n_nodes = length(bnnames)
+    @assert(n_nodes == size(adj, 1) == size(adj, 2))
+
+    BN = BayesNet(bnnames)
+
+    r_arr = Array(Int, n_nodes)
+    for (node,node_sym) in enumerate(bnnames)
+        stats = statsvec[node]
+        r, q = size(stats) # r = num node instantiations, q = num parental instantiations
+        states = collect(1:r)
+        BN.domains[node] = DiscreteDomain(states)
+        r_arr[node] = r
+    end
+
+    for (node,node_sym) in enumerate(bnnames)
+
+        stats = statsvec[node]
+        r, q = size(stats)
+        states = collect(1:r)
+
+        stats .+= 1 # NOTE(tim): adding uniform prior
+        probabilities = stats ./ sum(stats,1)
+
+        # set any parents & populate probability table
+        n_parents = sum(adj[:,node])
+        if n_parents > 0
+            bnparents = bnnames[adj[:,node]]
+            for pa in bnparents
+                addEdge!(BN, pa, node_sym)
+            end
+
+            # populate probability table
+            assignments = BayesNets.assignment_dicts(BN, bnparents)
+            # parameterFunction = BayesNets.discrete_parameter_function(assignments, vec(probabilities), r)
+            # setCPD!(BN, node_sym, CPDs.Discrete(states, parameterFunction))
+
+            parameterlookup = BayesNets.discrete_parameter_dict(assignments, vec(probabilities), r)
+            setCPD!(BN, node_sym, CPDs.DiscreteDictCPD(states, parameterlookup))
+        else
+            # no parents
+            # setCPD!(BN, node_sym, CPDs.Discrete(states, vec(probabilities)))
+
+            setCPD!(BN, node_sym, CPDs.DiscreteStaticCPD(states, vec(probabilities)))
+        end
+
+    end
+
+    return BN
+end
+function build_bn{R<:Real}(
+    statsvec   :: Vector{Matrix{R}},
+    targets    :: Vector{AbstractFeature},
+    indicators :: Vector{AbstractFeature}, # technically all of the non-target indicators
     adj        :: BitMatrix
     )
 
@@ -158,15 +282,18 @@ function is_target_lat(f::AbstractFeature)
     isa(f, Features.Feature_FutureDesiredAngle_250ms) ||
     isa(f, Features.Feature_FutureDesiredAngle_500ms)
 end
+is_target_lat(f::FeaturesNew.AbstractFeature) = isa(f, FeaturesNew.Feature_FutureAcceleration)
 function is_target_lon(f::AbstractFeature)
     isa(f, Features.Feature_FutureDesiredSpeed_250ms) ||
     isa(f, Features.Feature_FutureDesiredSpeed_500ms) ||
     isa(f, Features.Feature_FutureAcceleration_250ms) ||
     isa(f, Features.Feature_FutureAcceleration_500ms)
 end
+is_target_lon(f::FeaturesNew.AbstractFeature) = isa(f, FeaturesNew.Feature_FutureDesiredAngle)
 
 indexof(f::Symbol, model::DBNModel) = model.BN.index[f]
 indexof(f::AbstractFeature, model::DBNModel) = model.BN.index[symbol(f)]
+indexof(f::FeaturesNew.AbstractFeature, model::DBNModel) = model.BN.index[symbol(f)]
 is_parent(model::DBNModel, parent::Int, child::Int) = in(parent, in_neighbors(model.BN.dag, child))
 is_parent(model::DBNModel, parent::Symbol, child::Symbol) = is_parent(model, model.BN.index[parent], model.BN.index[child])
 function parent_indeces(varindex::Int, model::DBNModel)
@@ -183,7 +310,15 @@ function get_target_lat(model::DBNModel, targets::Vector{AbstractFeature}=get_ta
     ind = findfirst(f->is_target_lat(f), targets)
     targets[ind]
 end
+function get_target_lat(model::DBNModel, targets::Vector{FeaturesNew.AbstractFeature}=get_targets(model))
+    ind = findfirst(f->is_target_lat(f), targets)
+    targets[ind]
+end
 function get_target_lon(model::DBNModel, targets::Vector{AbstractFeature}=get_targets(model))
+    ind = findfirst(f->is_target_lon(f), targets)
+    targets[ind]
+end
+function get_target_lon(model::DBNModel, targets::Vector{FeaturesNew.AbstractFeature}=get_targets(model))
     ind = findfirst(f->is_target_lon(f), targets)
     targets[ind]
 end
@@ -194,6 +329,10 @@ function get_indicators_for_target(model::DBNModel, i::Int)
     model.features[indicator_indeces]
 end
 function get_indicators_for_target(model::DBNModel, target::AbstractFeature)
+    i = indexof(target, model)
+    get_indicators_for_target(model, i)
+end
+function get_indicators_for_target(model::DBNModel, target::FeaturesNew.AbstractFeature)
     i = indexof(target, model)
     get_indicators_for_target(model, i)
 end
