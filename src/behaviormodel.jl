@@ -27,8 +27,8 @@ type DynamicBayesianNetworkBehavior <: AbstractVehicleBehavior
     # TODO(tim): remove indicators once we switch completely to RunLogs
     indicators    :: Union{Vector{AbstractFeature}, Vector{FeaturesNew.AbstractFeature}}
     extractor     :: FeaturesNew.FeatureSubsetExtractor
-    # preprocess :: FeaturesNew.DataPreprocessor
     ordering      :: Vector{Int}
+    action_clamper::FeaturesNew.DataClamper
 
     # preallocated memory
     observations  :: Dict{Symbol,Float64}
@@ -44,7 +44,8 @@ type DynamicBayesianNetworkBehavior <: AbstractVehicleBehavior
     function DynamicBayesianNetworkBehavior(
         model::DBNModel,
         simparams_lat::DBNSimParams=DBNSimParams(),
-        simparams_lon::DBNSimParams=DBNSimParams()
+        simparams_lon::DBNSimParams=DBNSimParams(),
+        action_clamper_orig::FeaturesNew.DataClamper,
         )
 
         retval = new()
@@ -89,6 +90,12 @@ type DynamicBayesianNetworkBehavior <: AbstractVehicleBehavior
         if isa(f_lat, FeaturesNew.Feature_FutureAcceleration)
             x = Array(Float64, length(retval.indicators))
             retval.extractor = FeaturesNew.FeatureSubsetExtractor(x, retval.indicators)
+
+            retval.action_clamper = FeaturesNew.DataClamper(Array(Float64, 2),
+                                   deepcopy(action_clamper_orig.f_lo),
+                                   deepcopy(action_clamper_orig.f_hi))
+        else
+            retval.action_clamper = FeaturesNew.DataClamper(Array(Float64, 2), [-Inf, -Inf], [Inf, Inf])
         end
 
         retval
@@ -168,16 +175,11 @@ function select_action(
     bin_lat = assignment[symbol_lat]
     bin_lon = assignment[symbol_lon]
 
-    action_lat = decode(bmap_lat, bin_lat, samplemethod_lat)
-    action_lon = decode(bmap_lon, bin_lon, samplemethod_lon)
-
-    @assert(!isinf(action_lat))
-    @assert(!isinf(action_lon))
-    @assert(!isnan(action_lat))
-    @assert(!isnan(action_lon))
-
-    # action_lat = clamp(action_lat, -0.05, 0.05) # TODO(tim): remove this
-    # action_lon = clamp(action_lon, -3.0, 1.5) # TODO(tim): remove this
+    behavior.action_clamper.x[1] = decode(bmap_lat, bin_lat, samplemethod_lat)
+    behavior.action_clamper.x[2] = decode(bmap_lon, bin_lon, samplemethod_lon)
+    FeaturesNew.process!(behavior.action_clamper)
+    action_lat = behavior.action_clamper.x[1]
+    action_lon = behavior.action_clamper.x[2]
 
     (action_lat, action_lon)
 end
@@ -220,13 +222,11 @@ function select_action(
     bin_lat = assignment[symbol_lat]
     bin_lon = assignment[symbol_lon]
 
-    action_lat = decode(bmap_lat, bin_lat, samplemethod_lat)
-    action_lon = decode(bmap_lon, bin_lon, samplemethod_lon)
-
-    @assert(!isinf(action_lat))
-    @assert(!isinf(action_lon))
-    @assert(!isnan(action_lat))
-    @assert(!isnan(action_lon))
+    behavior.action_clamper.x[1] = decode(bmap_lat, bin_lat, samplemethod_lat)
+    behavior.action_clamper.x[2] = decode(bmap_lon, bin_lon, samplemethod_lon)
+    FeaturesNew.process!(behavior.action_clamper)
+    action_lat = behavior.action_clamper.x[1]
+    action_lon = behavior.action_clamper.x[2]
 
     (action_lat, action_lon)
 end

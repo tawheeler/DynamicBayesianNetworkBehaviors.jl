@@ -38,7 +38,7 @@ type BN_TrainParams <: AbstractVehicleBehaviorTrainParams
 
     starting_structure::ParentFeatures
     forced::ParentFeatures
-    targetset::ModelTargets
+    targets::ModelTargets
     indicators::Union{Vector{AbstractFeature},Vector{FeaturesNew.AbstractFeature}}
     discretizerdict::Dict{Symbol, AbstractDiscretizer}
 
@@ -59,7 +59,7 @@ type BN_TrainParams <: AbstractVehicleBehaviorTrainParams
     function BN_TrainParams(;
         starting_structure::ParentFeatures=ParentFeatures(),
         forced::ParentFeatures=ParentFeatures(),
-        targetset::ModelTargets=ModelTargets(FUTUREDESIREDANGLE_250MS, FUTUREACCELERATION_250MS),
+        targets::ModelTargets = ModelTargets{AbstractFeature}(FUTUREDESIREDANGLE_250MS, FUTUREACCELERATION_250MS),
         indicators::Union{Vector{AbstractFeature},Vector{FeaturesNew.AbstractFeature}}=copy(DEFAULT_INDICATORS),
         discretizerdict::Dict{Symbol, AbstractDiscretizer}=deepcopy(DEFAULT_DISCRETIZERS),
 
@@ -78,11 +78,17 @@ type BN_TrainParams <: AbstractVehicleBehaviorTrainParams
         optimize_parent_bins::Bool=true,
         )
 
+        if eltype(indicators) <: FeaturesNew.AbstractFeature
+            targets = ModelTargets{FeaturesNew.AbstractFeature}(
+                            FeaturesNew.FUTUREDESIREDANGLE,
+                            FeaturesNew.FUTUREACCELERATION)
+        end
+
         retval = new()
 
         retval.starting_structure = starting_structure
         retval.forced = forced
-        retval.targetset = targetset
+        retval.targets = targets
         retval.indicators = indicators
         retval.discretizerdict = discretizerdict
 
@@ -105,7 +111,7 @@ type BN_TrainParams <: AbstractVehicleBehaviorTrainParams
     function BN_TrainParams(;
         starting_structure::ParentFeatures=ParentFeatures(),
         forced::ParentFeatures=ParentFeatures(),
-        targetset::ModelTargets=ModelTargets(FUTUREDESIREDANGLE_250MS, FUTUREACCELERATION_250MS),
+        targets::ModelTargets=ModelTargets(FUTUREDESIREDANGLE_250MS, FUTUREACCELERATION_250MS),
         indicators::Union{Vector{AbstractFeature},Vector{FeaturesNew.AbstractFeature}}=copy(DEFAULT_INDICATORS),
         discretizerdict::Dict{Symbol, AbstractDiscretizer}=deepcopy(DEFAULT_DISCRETIZERS),
 
@@ -128,7 +134,7 @@ type BN_TrainParams <: AbstractVehicleBehaviorTrainParams
 
         retval.starting_structure = starting_structure
         retval.forced = forced
-        retval.targetset = targetset
+        retval.targets = targets
         retval.indicators = indicators
         retval.discretizerdict = discretizerdict
 
@@ -157,6 +163,7 @@ type BN_PreallocatedData <: AbstractVehicleBehaviorPreallocatedData
     It then copies data into it based on the given fold assignment
     =#
 
+    action_clamper::FeaturesNew.DataClamper
     continuous::Matrix{Float64} # [nsamples×nfeatures]
     discrete::Matrix{Int}       # [nsamples×nfeatures]
     bincounts::Vector{Int}      # [nfeatures]
@@ -176,15 +183,33 @@ type BN_PreallocatedData <: AbstractVehicleBehaviorPreallocatedData
     end
     function BN_PreallocatedData(dset::ModelTrainingData2, params::BN_TrainParams)
 
-        nsamples = nrow(dset.dataframe)
-        nfeatures = length(params.indicators) + 2
+        targets = params.targets
+        indicators = params.indicators
+        trainingframes = dset.dataframe
+        nframes = nrow(trainingframes)
+        nindicators = length(indicators)
+        nfeatures = nindicators + 2
 
         continuous = Array(Float64, nsamples, nfeatures)
         discrete = Array(Int, nsamples, nfeatures)
         bincounts = Array(Int, nfeatures)
         rowcount = 0
 
-        new(continuous, discrete, bincounts, rowcount)
+        Y = Array(Float64, 2, nframes)
+        pull_target_matrix!(Y, dset.dataframe, targets, indicators)
+
+        retval = new()
+        retval.action_clamper = FeaturesNew.DataClamper(
+                Array(Float64, 2),
+                vec(minimum(Y, 2)),
+                vec(maximum(Y, 2))
+            )
+        retval.continuous = continuous
+        retval.discrete = discrete
+        retval.bincounts = bincounts
+        retval.rowcount = rowcount
+
+        retval
     end
 end
 function preallocate_learning_data(
@@ -1438,8 +1463,9 @@ function train(
 
     starting_structure = params.starting_structure
     forced = params.forced
-    targetset = params.targetset
+    targets = params.targets
     indicators = params.indicators
+    action_clamper = preallocated_data.action_clamper
     discretizerdict = params.discretizerdict
 
     verbosity = params.verbosity
@@ -1456,10 +1482,10 @@ function train(
 
     ####################
 
-    targets = [targetset.lat, targetset.lon]
+    targets = [targets.lat, targets.lon]
     features = [targets; indicators]
 
-    ind_lat, ind_lon = find_target_indeces(targetset, features)
+    ind_lat, ind_lon = find_target_indeces(targets, features)
     parents_lat, parents_lon = get_parent_indeces(starting_structure, features)
     forced_lat, forced_lon = get_parent_indeces(forced, features)
 
@@ -1687,7 +1713,7 @@ function train(
                               preallocated_data.bincounts, preallocated_data.discrete[1:preallocated_data.rowcount,:]')
     model = dbnmodel(get_emstats(res, binmapdict))
 
-    DynamicBayesianNetworkBehavior(model, DBNSimParams(), DBNSimParams())
+    DynamicBayesianNetworkBehavior(model, DBNSimParams(), DBNSimParams(), action_clamper)
 end
 function train(
     training_data::ModelTrainingData2,
@@ -1700,8 +1726,9 @@ function train(
 
     starting_structure = params.starting_structure
     forced = params.forced
-    targetset = params.targetset
+    targets = params.targets
     indicators = (params.indicators)::Vector{FeaturesNew.AbstractFeature}
+    action_clamper = preallocated_data.action_clamper
     discretizerdict = params.discretizerdict
 
     verbosity = params.verbosity
@@ -1954,5 +1981,5 @@ function train(
                               preallocated_data.bincounts, preallocated_data.discrete[1:preallocated_data.rowcount,:]')
     model = dbnmodel(get_emstats(res, binmapdict))
 
-    DynamicBayesianNetworkBehavior(model, DBNSimParams(), DBNSimParams())
+    DynamicBayesianNetworkBehavior(model, DBNSimParams(), DBNSimParams(), action_clamper)
 end
