@@ -14,8 +14,8 @@ function dbnmodel{R<:Real, D<:AbstractDiscretizer}(
     indicators::Vector{AbstractFeature}
     )
 
-    features = AbstractFeature[symbol2feature(sym) for sym in BN.names]
-    discretizers = AbstractDiscretizer[discretizerdict[sym] for sym in BN.names]
+    features = AbstractFeature[symbol2feature(node.name) for node in BN.nodes]
+    discretizers = AbstractDiscretizer[discretizerdict[node.name] for node in BN.nodes]
     istarget = falses(length(features))
     for (i,f) in enumerate(features)
         if in(f, targets)
@@ -36,8 +36,8 @@ function dbnmodel{R<:Real, D<:AbstractDiscretizer}(
     indicators::Vector{FeaturesNew.AbstractFeature}
     )
 
-    features = FeaturesNew.AbstractFeature[FeaturesNew.symbol2feature(sym) for sym in BN.names]
-    discretizers = AbstractDiscretizer[discretizerdict[sym] for sym in BN.names]
+    features = FeaturesNew.AbstractFeature[FeaturesNew.symbol2feature(sym) for sym in names(BN)]
+    discretizers = AbstractDiscretizer[discretizerdict[sym] for sym in names(BN)]
     istarget = falses(length(features))
     for (i,f) in enumerate(features)
         if in(f, targets)
@@ -58,7 +58,7 @@ function dbnmodel{R<:Real, D<:AbstractDiscretizer}(
     indicators::Vector{AbstractFeature},
     )
 
-    features = AbstractFeature[symbol2feature(sym) for sym in BN.names]
+    features = AbstractFeature[symbol2feature(sym) for sym in names(BN)]
     istarget = falses(length(features))
     for (i,f) in enumerate(features)
         if in(f, targets)
@@ -79,7 +79,7 @@ function dbnmodel{R<:Real, D<:AbstractDiscretizer}(
     indicators::Vector{FeaturesNew.AbstractFeature},
     )
 
-    features = FeaturesNew.AbstractFeature[symbol2feature(sym) for sym in BN.names]
+    features = FeaturesNew.AbstractFeature[symbol2feature(sym) for sym in names(BN)]
     istarget = falses(length(features))
     for (i,f) in enumerate(features)
         if in(f, targets)
@@ -122,7 +122,7 @@ function dbnmodel(modelstats::Dict{AbstractString, Any})
     stats      = modelstats["statistics"]
     adj        = modelstats["adjacency"] # adj[i,j] = true means i → j
 
-    if isa(indicators[1], AbstractFeature)
+    if eltype(targets) <: AbstractFeature
         dbnmodel(adj, stats, discretizerdict, convert(Vector{AbstractFeature}, targets),
                             convert(Vector{AbstractFeature}, indicators))
     else
@@ -162,12 +162,12 @@ function build_bn{R<:Real}(
     BN = BayesNet(bnnames)
 
     r_arr = Array(Int, n_nodes)
-    for (node,node_sym) in enumerate(bnnames)
-        stats = statsvec[node]
+    for (i,node_sym) in enumerate(bnnames)
+        stats = statsvec[i]
         r, q = size(stats) # r = num node instantiations, q = num parental instantiations
         states = collect(1:r)
-        BN.domains[node] = DiscreteDomain(states)
-        r_arr[node] = r
+        BN.nodes[i].domain = BayesNets.CPDs.DiscreteDomain(states)
+        r_arr[i] = r
     end
 
     for (node,node_sym) in enumerate(bnnames)
@@ -184,7 +184,7 @@ function build_bn{R<:Real}(
         if n_parents > 0
             bnparents = bnnames[adj[:,node]]
             for pa in bnparents
-                addEdge!(BN, pa, node_sym)
+                add_edge!(BN, pa, node_sym)
             end
 
             # populate probability table
@@ -193,12 +193,12 @@ function build_bn{R<:Real}(
             # setCPD!(BN, node_sym, CPDs.Discrete(states, parameterFunction))
 
             parameterlookup = BayesNets.discrete_parameter_dict(assignments, vec(probabilities), r)
-            setCPD!(BN, node_sym, CPDs.DiscreteDictCPD(states, parameterlookup))
+            set_CPD!(BN, node_sym, CPDs.DiscreteDict(states, parameterlookup))
         else
             # no parents
             # setCPD!(BN, node_sym, CPDs.Discrete(states, vec(probabilities)))
 
-            setCPD!(BN, node_sym, CPDs.DiscreteStaticCPD(states, vec(probabilities)))
+            set_CPD!(BN, node_sym, CPDs.DiscreteStatic(states, vec(probabilities)))
         end
 
     end
@@ -254,7 +254,7 @@ function build_bn{R<:Real}(
         if n_parents > 0
             bnparents = bnnames[adj[:,node]]
             for pa in bnparents
-                addEdge!(BN, pa, node_sym)
+                add_edge!(BN, pa, node_sym)
             end
 
             # populate probability table
@@ -291,16 +291,16 @@ function is_target_lon(f::AbstractFeature)
 end
 is_target_lon(f::FeaturesNew.AbstractFeature) = isa(f, FeaturesNew.Feature_FutureDesiredAngle)
 
-indexof(f::Symbol, model::DBNModel) = model.BN.index[f]
-indexof(f::AbstractFeature, model::DBNModel) = model.BN.index[symbol(f)]
-indexof(f::FeaturesNew.AbstractFeature, model::DBNModel) = model.BN.index[symbol(f)]
+indexof(f::Symbol, model::DBNModel) = model.BN.name_to_index[f]
+indexof(f::AbstractFeature, model::DBNModel) = model.BN.name_to_index[symbol(f)]
+indexof(f::FeaturesNew.AbstractFeature, model::DBNModel) = model.BN.name_to_index[symbol(f)]
 is_parent(model::DBNModel, parent::Int, child::Int) = in(parent, in_neighbors(model.BN.dag, child))
-is_parent(model::DBNModel, parent::Symbol, child::Symbol) = is_parent(model, model.BN.index[parent], model.BN.index[child])
+is_parent(model::DBNModel, parent::Symbol, child::Symbol) = is_parent(model, model.BN.name_to_index[parent], model.BN.name_to_index[child])
 function parent_indeces(varindex::Int, model::DBNModel)
-    parent_names = BayesNets.parents(model.BN, model.BN.names[varindex])
+    parent_names = BayesNets.parents(model.BN, model.names(BN)[varindex])
     retval = Array(Int, length(parent_names))
     for (i, name) in enumerate(parent_names)
-        retval[i] = model.BN.index[name]
+        retval[i] = model.BN.name_to_index[name]
     end
     retval
 end
@@ -387,7 +387,7 @@ function get_counts_for_assignment(
     nparents = length(parentindeces)
     parentassignments = Array(Int, nparents)
     for (i,ind) in enumerate(parentindeces)
-        parentassignments[i] = assignments[model.BN.names[ind]]
+        parentassignments[i] = assignments[model.BN.nodes[ind].name]
     end
     get_counts_for_assignment(model, targetind, parentindeces, parentassignments, bincounts)
 end
@@ -399,7 +399,7 @@ function encode!(assignment::Dict{Symbol,Int}, model::DBNModel, observations::Di
     # TODO(tim): ensure order is correct
     for (i,istarget) in enumerate(model.istarget)
         if !istarget
-            sym = model.BN.names[i]
+            sym = model.BN.nodes[i].name
             val = observations[sym]
             @assert(!isnan(val))
             assignment[sym] = encode(model.discretizers[i], val)
@@ -420,7 +420,8 @@ function sample!(model::DBNModel, assignment::Dict{Symbol, Int}, ordering::Vecto
     #     end
     # end
 
-    for name in model.BN.names[ordering]
+    for node in model.BN.nodes[ordering]
+        name = node.name
         cpd = BayesNets.cpd(model.BN, name)
 
         p = BayesNets.probvec(cpd, assignment)
@@ -444,7 +445,9 @@ function sample_and_logP!(
     ordering::Vector{Int}=topological_sort_by_dfs(model.BN.dag),
     )
 
-    for name in model.BN.names[ordering]
+    for node in model.BN.nodes[ordering]
+        name = node.name
+
         cpd = BayesNets.cpd(model.BN, name)
 
         p = BayesNets.probvec(cpd, assignment)

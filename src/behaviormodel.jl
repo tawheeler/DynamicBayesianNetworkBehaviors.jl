@@ -43,8 +43,8 @@ type DynamicBayesianNetworkBehavior <: AbstractVehicleBehavior
 
     function DynamicBayesianNetworkBehavior(
         model::DBNModel,
-        simparams_lat::DBNSimParams=DBNSimParams(),
-        simparams_lon::DBNSimParams=DBNSimParams(),
+        simparams_lat::DBNSimParams, #OTOD(tim): get rid of these?
+        simparams_lon::DBNSimParams,
         action_clamper_orig::FeaturesNew.DataClamper,
         )
 
@@ -79,8 +79,11 @@ type DynamicBayesianNetworkBehavior <: AbstractVehicleBehavior
         retval.logPs[retval.symbol_lat] = NaN
         retval.logPs[retval.symbol_lon] = NaN
 
-        retval.ind_lat_in_discretizers = findfirst(model.BN.names, retval.symbol_lat)
-        retval.ind_lon_in_discretizers = findfirst(model.BN.names, retval.symbol_lon)
+        retval.ind_lat_in_discretizers = indexof(retval.symbol_lat, model)
+        retval.ind_lon_in_discretizers = indexof(retval.symbol_lon, model)
+
+        old_way = findfirst([node.name for node in model.BN.nodes], retval.symbol_lon)
+        @assert(retval.ind_lon_in_discretizers == old_way)
 
         retval.binprobs_lat = Array(Float64, nlabels(model.discretizers[retval.ind_lat_in_discretizers]))
         retval.binprobs_lon = Array(Float64, nlabels(model.discretizers[retval.ind_lon_in_discretizers]))
@@ -304,8 +307,8 @@ function calc_action_loglikelihood(
     model = behavior.model
     symbol_lat = behavior.symbol_lat
     symbol_lon = behavior.symbol_lon
-    bmap_lat = model.discretizers[findfirst(model.BN.names, symbol_lat)]
-    bmap_lon = model.discretizers[findfirst(model.BN.names, symbol_lon)]
+    bmap_lat = model.discretizers[indexof(retval.symbol_lat, model)]
+    bmap_lon = model.discretizers[indexof(retval.symbol_lon, model)]
 
     if min(bmap_lat) ≤ action_lat ≤ max(bmap_lat) &&
        min(bmap_lon) ≤ action_lon ≤ max(bmap_lon)
@@ -334,8 +337,8 @@ function calc_action_loglikelihood(
     model = behavior.model
     symbol_lat = behavior.symbol_lat
     symbol_lon = behavior.symbol_lon
-    bmap_lat = model.discretizers[findfirst(model.BN.names, symbol_lat)]
-    bmap_lon = model.discretizers[findfirst(model.BN.names, symbol_lon)]
+    bmap_lat = model.discretizers[indexof(symbol_lat, model)]
+    bmap_lon = model.discretizers[indexof(symbol_lat, model)]
 
     if min(bmap_lat) ≤ action_lat ≤ max(bmap_lat) &&
        min(bmap_lon) ≤ action_lon ≤ max(bmap_lon)
@@ -366,8 +369,8 @@ function calc_action_loglikelihood(
     model = behavior.model
     symbol_lat = behavior.symbol_lat
     symbol_lon = behavior.symbol_lon
-    bmap_lat = model.discretizers[findfirst(model.BN.names, symbol_lat)]
-    bmap_lon = model.discretizers[findfirst(model.BN.names, symbol_lon)]
+    bmap_lat = model.discretizers[indexof(symbol_lat, model)]
+    bmap_lon = model.discretizers[indexof(symbol_lat, model)]
 
     if min(bmap_lat) ≤ action_lat ≤ max(bmap_lat) &&
        min(bmap_lon) ≤ action_lon ≤ max(bmap_lon)

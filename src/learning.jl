@@ -59,7 +59,7 @@ type BN_TrainParams <: AbstractVehicleBehaviorTrainParams
     function BN_TrainParams(;
         starting_structure::ParentFeatures=ParentFeatures(),
         forced::ParentFeatures=ParentFeatures(),
-        targets::ModelTargets = ModelTargets{AbstractFeature}(FUTUREDESIREDANGLE_250MS, FUTUREACCELERATION_250MS),
+        targets::ModelTargets = ModelTargets{Features.AbstractFeature}(FUTUREDESIREDANGLE_250MS, FUTUREACCELERATION_250MS),
         indicators::Union{Vector{AbstractFeature},Vector{FeaturesNew.AbstractFeature}}=copy(DEFAULT_INDICATORS),
         discretizerdict::Dict{Symbol, AbstractDiscretizer}=deepcopy(DEFAULT_DISCRETIZERS),
 
@@ -83,52 +83,6 @@ type BN_TrainParams <: AbstractVehicleBehaviorTrainParams
                             FeaturesNew.FUTUREDESIREDANGLE,
                             FeaturesNew.FUTUREACCELERATION)
         end
-
-        retval = new()
-
-        retval.starting_structure = starting_structure
-        retval.forced = forced
-        retval.targets = targets
-        retval.indicators = indicators
-        retval.discretizerdict = discretizerdict
-
-        retval.dirichlet_prior = dirichlet_prior
-
-        retval.verbosity = verbosity
-        retval.ncandidate_bins = ncandidate_bins
-        retval.max_parents = max_parents
-        retval.nbins_lat = nbins_lat
-        retval.nbins_lon = nbins_lon
-
-        retval.preoptimize_target_bins = preoptimize_target_bins
-        retval.preoptimize_indicator_bins = preoptimize_indicator_bins
-        retval.optimize_structure = optimize_structure
-        retval.optimize_target_bins = optimize_target_bins
-        retval.optimize_parent_bins = optimize_parent_bins
-
-        retval
-    end
-    function BN_TrainParams(;
-        starting_structure::ParentFeatures=ParentFeatures(),
-        forced::ParentFeatures=ParentFeatures(),
-        targets::ModelTargets=ModelTargets(FUTUREDESIREDANGLE_250MS, FUTUREACCELERATION_250MS),
-        indicators::Union{Vector{AbstractFeature},Vector{FeaturesNew.AbstractFeature}}=copy(DEFAULT_INDICATORS),
-        discretizerdict::Dict{Symbol, AbstractDiscretizer}=deepcopy(DEFAULT_DISCRETIZERS),
-
-        dirichlet_prior::DirichletPrior=UniformPrior(),
-
-        verbosity::Int=0,
-        ncandidate_bins::Int=20,
-        max_parents::Int=6,
-        nbins_lat::Int=7,
-        nbins_lon::Int=7,
-
-        preoptimize_target_bins::Bool=true,
-        preoptimize_indicator_bins::Bool=true,
-        optimize_structure::Bool=true,
-        optimize_target_bins::Bool=true,
-        optimize_parent_bins::Bool=true,
-        )
 
         retval = new()
 
@@ -186,7 +140,7 @@ type BN_PreallocatedData <: AbstractVehicleBehaviorPreallocatedData
         targets = params.targets
         indicators = params.indicators
         trainingframes = dset.dataframe
-        nframes = nrow(trainingframes)
+        nsamples = nrow(trainingframes)
         nindicators = length(indicators)
         nfeatures = nindicators + 2
 
@@ -195,7 +149,7 @@ type BN_PreallocatedData <: AbstractVehicleBehaviorPreallocatedData
         bincounts = Array(Int, nfeatures)
         rowcount = 0
 
-        Y = Array(Float64, 2, nframes)
+        Y = Array(Float64, 2, nsamples)
         pull_target_matrix!(Y, dset.dataframe, targets, indicators)
 
         retval = new()
@@ -330,8 +284,7 @@ function drop_invalid_discretization_rows{D<:AbstractDiscretizer, F<:AbstractFea
             sym = symbol(f)
             value = data[i, sym]::Float64
             dmap = binmaps[sym]
-            if isnan(value) ||
-               (isinf(value) && in(j, target_indeces)) ||
+            if (FeaturesNew.is_feature_na(value) && in(j, target_indeces)) ||
                !supports_encoding(dmap, value)
 
                 is_valid[i] = false
@@ -1778,11 +1731,17 @@ function train(
                 sym = symbol(f)
                 dmap = discretizerdict[sym]
                 value = training_data.dataframe[i, sym]::Float64
-                @assert(!isnan(value))
+
                 if supports_encoding(dmap, value) &&
-                 !(isinf(value) && (j == ind_lat || j == ind_lon))
+                 !(FeaturesNew.is_feature_na(value) && (j == ind_lat || j == ind_lon))
                     preallocated_data.continuous[rowcount, j] = value
                 else
+                    if !supports_encoding(dmap, value)
+                        println("does not support encoding: ", sym, "  ", value)
+                    elseif FeaturesNew.is_feature_na(value) && (j == ind_lat || j == ind_lon)
+                        println("is na: ", sym, "  ", value)
+                    end
+
                     rowcount -= 1
                     break
                 end
@@ -1815,8 +1774,8 @@ function train(
             modelparams.binmaps[ind_lat] = disc
         end
 
-        for (i,x) in enumerate(datavec)
-            @assert(extremes[1] ≤ x ≤ extremes[2])
+        for i in 1 : length(datavec)
+            datavec[i] = clamp(datavec[i], extremes[1], extremes[2])
         end
         copy!(disc.binedges, optimize_categorical_binning!(datavec, nbins, extremes, ncandidate_bins))
 
@@ -1836,11 +1795,8 @@ function train(
             modelparams.binmaps[ind_lon] = disc
         end
 
-        for (i,x) in enumerate(datavec)
-            if !(extremes[1] ≤ x ≤ extremes[2])
-                println(extremes[1], " ≤ ", x, " ≤ ", extremes[2])
-            end
-            @assert(extremes[1] ≤ x ≤ extremes[2])
+        for i in 1 : length(datavec)
+            datavec[i] = clamp(datavec[i], extremes[1], extremes[2])
         end
         copy!(disc.binedges, optimize_categorical_binning!(datavec, nbins, extremes, ncandidate_bins))
 
@@ -1904,13 +1860,21 @@ function train(
 
     ############################################################################
     # Discretize preallocated_data.continuous → preallocated_data.discrete
-    # Compute bincounts
+    #  - compute bincounts
+    #  - encode discrete values
 
     for (j,dmap) in enumerate(modelparams.binmaps)
         preallocated_data.bincounts[j] = nlabels(dmap)
         for i in 1 : preallocated_data.rowcount
             value = preallocated_data.continuous[i,j]
-            preallocated_data.discrete[i,j] = encode(dmap, value)
+            try
+                preallocated_data.discrete[i,j] = encode(dmap, value)
+            catch
+                warn("Bad encoding in learning.jl")
+                warn(symbol(features[j]), "  ", value)
+                warn(dmap)
+                exit()
+            end
         end
     end
 
@@ -1958,7 +1922,7 @@ function train(
 
         println("\nIndicator Bins:")
         if !isempty(modelparams.parents_lat) && !isempty(modelparams.parents_lon)
-            for parent_index in unique([modelparams.parents_lat, modelparams.parents_lon])
+            for parent_index in unique([modelparams.parents_lat; modelparams.parents_lon])
                 sym = symbol(features[parent_index])
                 if isa(modelparams.binmaps[parent_index], LinearDiscretizer)
                     println(sym, "\t", modelparams.binmaps[parent_index].binedges)
@@ -1979,6 +1943,7 @@ function train(
     res = GraphLearningResult("trained", modelparams.features, modelparams.ind_lat, modelparams.ind_lon,
                               modelparams.parents_lat, modelparams.parents_lon, NaN,
                               preallocated_data.bincounts, preallocated_data.discrete[1:preallocated_data.rowcount,:]')
+
     model = dbnmodel(get_emstats(res, binmapdict))
 
     DynamicBayesianNetworkBehavior(model, DBNSimParams(), DBNSimParams(), action_clamper)
