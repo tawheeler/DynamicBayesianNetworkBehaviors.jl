@@ -6,6 +6,16 @@ immutable DBNModel
     istarget      :: BitVector # whether a feature is a target feature
 end
 
+function Base.print(io::IO, model::DBNModel)
+
+    target_lat = get_target_lat(model)
+    target_lon = get_target_lon(model)
+
+    println(io, "DBNModel")
+    println(io, "\t", symbol(target_lat), " <- ", map(f->symbol(f), get_indicators_for_target(model, target_lat)))
+    println(io, "\t", symbol(target_lon), " <- ", map(f->symbol(f), get_indicators_for_target(model, target_lon)))
+end
+
 function dbnmodel{R<:Real, D<:AbstractDiscretizer}(
     BN:: BayesNet,
     statsvec::Vector{Matrix{R}},
@@ -297,7 +307,7 @@ indexof(f::FeaturesNew.AbstractFeature, model::DBNModel) = model.BN.name_to_inde
 is_parent(model::DBNModel, parent::Int, child::Int) = in(parent, in_neighbors(model.BN.dag, child))
 is_parent(model::DBNModel, parent::Symbol, child::Symbol) = is_parent(model, model.BN.name_to_index[parent], model.BN.name_to_index[child])
 function parent_indeces(varindex::Int, model::DBNModel)
-    parent_names = BayesNets.parents(model.BN, model.names(BN)[varindex])
+    parent_names = BayesNets.parents(model.BN, names(model.BN)[varindex])
     retval = Array(Int, length(parent_names))
     for (i, name) in enumerate(parent_names)
         retval[i] = model.BN.name_to_index[name]
@@ -401,7 +411,6 @@ function encode!(assignment::Dict{Symbol,Int}, model::DBNModel, observations::Di
         if !istarget
             sym = model.BN.nodes[i].name
             val = observations[sym]
-            @assert(!isnan(val))
             assignment[sym] = encode(model.discretizers[i], val)
         end
     end

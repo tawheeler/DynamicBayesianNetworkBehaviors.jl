@@ -109,6 +109,29 @@ type BN_TrainParams <: AbstractVehicleBehaviorTrainParams
         retval
     end
 end
+function Base.print(io::IO, Θ::BN_TrainParams)
+    println(io, "BN Train Params")
+    println(io, "starting_structure")
+    println(io, "\tlat: ", map(f->symbol(f), Θ.starting_structure.lat))
+    println(io, "\tlon: ", map(f->symbol(f), Θ.starting_structure.lon))
+    println(io, "forced")
+    println(io, "\tlat: ", map(f->symbol(f), Θ.forced.lat))
+    println(io, "\tlon: ", map(f->symbol(f), Θ.forced.lon))
+    println(io, "targets")
+    println(io, "\tlat: ", symbol(Θ.targets.lat))
+    println(io, "\tlon: ", symbol(Θ.targets.lon))
+    println(io, "prior:           ", Θ.dirichlet_prior)
+    println(io, "verbosity:       ", Θ.verbosity)
+    println(io, "ncandidate_bins: ", Θ.ncandidate_bins)
+    println(io, "max_parents:     ", Θ.max_parents)
+    println(io, "nbins_lat:       ", Θ.nbins_lat)
+    println(io, "nbins_lon:       ", Θ.nbins_lon)
+    println(io, "preoptimize_target_bins:    ", Θ.preoptimize_target_bins)
+    println(io, "preoptimize_indicator_bins: ", Θ.preoptimize_indicator_bins)
+    println(io, "optimize_structure:         ", Θ.optimize_structure)
+    println(io, "optimize_target_bins:       ", Θ.optimize_target_bins)
+    println(io, "optimize_parent_bins:       ", Θ.optimize_parent_bins)
+end
 
 
 type BN_PreallocatedData <: AbstractVehicleBehaviorPreallocatedData
@@ -269,6 +292,11 @@ function rediscretize!(data::ModelData, modelparams::ModelParams, variable_index
     data.discrete[variable_index,:] = encode(binmap, data.continuous[variable_index,:])
     data
 end
+function rediscretize!(data::BN_PreallocatedData, modelparams::ModelParams, variable_index::Int)
+    binmap = modelparams.binmaps[variable_index]
+    data.discrete[variable_index,:] = encode(binmap, data.continuous[variable_index,:])
+    data
+end
 function drop_invalid_discretization_rows{D<:AbstractDiscretizer, F<:AbstractFeature}(
     binmaps  :: Dict{Symbol, D},
     features :: Vector{F},
@@ -388,7 +416,7 @@ function get_starting_opt_vector(
 
     unit_range_lat = bins_actual_to_unit_range(starting_bins_lat[2:end-1], extrema_lat...)
     unit_range_lon = bins_actual_to_unit_range(starting_bins_lon[2:end-1], extrema_lon...)
-    [unit_range_lat, unit_range_lon]
+    [unit_range_lat; unit_range_lon]
 end
 function bins_unit_range_to_actual(bin_inner_edges::Vector{Float64}, bin_lo::Float64, bin_hi::Float64)
     width = bin_hi - bin_lo
@@ -1492,7 +1520,7 @@ function train(
         end
 
         disc::LinearDiscretizer = modelparams.binmaps[ind_lat]
-        extremes = (disc.binedges[1], disc.binedges[end])
+        extremes = extrema(training_data.dataframe[symbol(targets.lat)])
         nbins = nlabels(disc)
         if nbins_lat != -1
             nbins = nbins_lat
@@ -1513,7 +1541,7 @@ function train(
         end
 
         disc = modelparams.binmaps[ind_lon]::LinearDiscretizer
-        extremes = (disc.binedges[1], disc.binedges[end])
+        extremes = extrema(training_data.dataframe[symbol(targets.lon)])
         nbins = nlabels(disc)
         if nbins_lon != -1
             nbins = nbins_lon
@@ -1698,8 +1726,7 @@ function train(
 
     ####################
 
-    targets = [FeaturesNew.FUTUREDESIREDANGLE, FeaturesNew.FUTUREACCELERATION]
-    features = [targets; indicators]
+    features = [[targets.lat, targets.lon]; indicators]
 
     # TODO(tim): fix this
     ind_lat = 1
@@ -1766,7 +1793,7 @@ function train(
         end
 
         disc::LinearDiscretizer = modelparams.binmaps[ind_lat]
-        extremes = (disc.binedges[1], disc.binedges[end])
+        extremes = extrema(training_data.dataframe[symbol(targets.lat)])
         nbins = nlabels(disc)
         if nbins_lat != -1
             nbins = nbins_lat
@@ -1787,7 +1814,7 @@ function train(
         end
 
         disc = modelparams.binmaps[ind_lon]::LinearDiscretizer
-        extremes = (disc.binedges[1], disc.binedges[end])
+        extremes = extrema(training_data.dataframe[symbol(targets.lon)])
         nbins = nlabels(disc)
         if nbins_lon != -1
             nbins = nbins_lon

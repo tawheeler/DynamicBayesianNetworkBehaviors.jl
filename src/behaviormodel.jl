@@ -105,6 +105,19 @@ type DynamicBayesianNetworkBehavior <: AbstractVehicleBehavior
     end
 end
 
+function Base.print(io::IO, BN::DynamicBayesianNetworkBehavior)
+    println(io, "DynamicBayesianNetworkBehavior")
+    println(io, "\tDBNModel: ")
+    print(io, BN.model)
+    println(io, "\tind_lat:          ", BN.ind_lat)
+    println(io, "\tind_lon:          ", BN.ind_lon)
+    println(io, "\tsymbol_lat:       ", BN.symbol_lat)
+    println(io, "\tsymbol_lon:       ", BN.symbol_lon)
+    println(io, "\tordering:         ", BN.ordering)
+    println(io, "\tsubset_extractor: ", BN.extractor)
+    println(io, "\taction_clamper:   ", BN.action_clamper)
+end
+
 # function infer_action_lon_from_input_acceleration(sym::Symbol, accel::Float64, simlog::Matrix{Float64}, frameind::Int, logindexbase::Int)
 
 #     if sym == :f_accel_250ms || sym == :f_accel_500ms
@@ -372,6 +385,9 @@ function calc_action_loglikelihood(
     bmap_lat = model.discretizers[indexof(symbol_lat, model)]
     bmap_lon = model.discretizers[indexof(symbol_lat, model)]
 
+    # action_lat = clamp(action_lat, min(bmap_lat), max(bmap_lat))
+    # action_lon = clamp(action_lon, min(bmap_lon), max(bmap_lon))
+
     if min(bmap_lat) ≤ action_lat ≤ max(bmap_lat) &&
        min(bmap_lon) ≤ action_lon ≤ max(bmap_lon)
 
@@ -387,7 +403,7 @@ function calc_action_loglikelihood(
 
         _calc_action_loglikelihood(behavior, action_lat, action_lon)
     else
-        print_with_color(:red, STDOUT, "\nDynamicBayesianNetworkBehaviors calc_log_prob: HIT\n")
+        print_with_color(:red, STDOUT, "\nDynamicBayesianNetworkBehaviors calc_action_loglikelihood: HIT\n")
         print_with_color(:red, STDOUT, "frameind: $frameind\n")
         print_with_color(:red, STDOUT, "$(min(bmap_lat))  $action_lat $(max(bmap_lat))\n")
         print_with_color(:red, STDOUT, "$(min(bmap_lon))  $action_lon $(max(bmap_lon))\n")
