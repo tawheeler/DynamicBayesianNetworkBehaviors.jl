@@ -1,5 +1,8 @@
 abstract DirichletPrior
-type UniformPrior <: DirichletPrior end # α_ijk = 1.0
+type UniformPrior <: DirichletPrior
+    α::Float64
+    UniformPrior(α::Float64=1.0) = new(α)
+end
 type BDeuPrior <: DirichletPrior
     #=
     Assigns equal scores to Markov equivalent structures
@@ -14,10 +17,10 @@ type BDeuPrior <: DirichletPrior
     BDeuPrior(x::Float64=1.0) = new(x)
 end
 
-Base.print(io::IO, p::UniformPrior) = Base.print(io, "UniformPrior")
+Base.print(io::IO, p::UniformPrior) = Base.print(io, "UniformPrior(%.2f)", p.x)
 Base.print(io::IO, p::BDeuPrior) = @printf(io, "BDeuPrior(%.2f)", p.x)
 
-function Base.get{I<:Integer, J<:Integer}(::UniformPrior,
+function Base.get{I<:Integer, J<:Integer}(p::UniformPrior,
     var_index::Integer,
     nintervals::AbstractVector{I}, # [nvars]
     parents::AbstractVector{J},    # [nvars]
@@ -25,7 +28,7 @@ function Base.get{I<:Integer, J<:Integer}(::UniformPrior,
 
     r = nintervals[var_index]
     q = isempty(parents) ? 1 : prod(nintervals[parents])
-    α = 1.0
+    α = p.α
 
     fill(α, r, q)::Matrix{Float64}
 end

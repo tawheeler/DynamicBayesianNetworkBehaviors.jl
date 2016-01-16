@@ -292,14 +292,14 @@ function is_target_lat(f::AbstractFeature)
     isa(f, Features.Feature_FutureDesiredAngle_250ms) ||
     isa(f, Features.Feature_FutureDesiredAngle_500ms)
 end
-is_target_lat(f::FeaturesNew.AbstractFeature) = isa(f, FeaturesNew.Feature_FutureAcceleration)
+is_target_lat(f::FeaturesNew.AbstractFeature) = isa(f, FeaturesNew.Feature_FutureDesiredAngle)
 function is_target_lon(f::AbstractFeature)
     isa(f, Features.Feature_FutureDesiredSpeed_250ms) ||
     isa(f, Features.Feature_FutureDesiredSpeed_500ms) ||
     isa(f, Features.Feature_FutureAcceleration_250ms) ||
     isa(f, Features.Feature_FutureAcceleration_500ms)
 end
-is_target_lon(f::FeaturesNew.AbstractFeature) = isa(f, FeaturesNew.Feature_FutureDesiredAngle)
+is_target_lon(f::FeaturesNew.AbstractFeature) = isa(f, FeaturesNew.Feature_FutureAcceleration)
 
 indexof(f::Symbol, model::DBNModel) = model.BN.name_to_index[f]
 indexof(f::AbstractFeature, model::DBNModel) = model.BN.name_to_index[symbol(f)]
@@ -381,7 +381,7 @@ function get_counts_for_assignment(
     bincounts::Vector{Int}
     )
 
-    dims = tuple([bincounts[parentindeces]]...)
+    dims = tuple(bincounts[parentindeces]...)
     subs = tuple(parentassignments...)
     j = sub2ind(dims, subs...)
     copy(model.statsvec[targetind][:,j])
@@ -442,6 +442,36 @@ function sample!(model::DBNModel, assignment::Dict{Symbol, Int}, ordering::Vecto
             i += 1
         end
         assignment[name] = cpd.domain[i]
+    end
+
+    assignment
+end
+function sample_unset!(model::DBNModel, assignment::Dict{Symbol, Int}, ordering::Vector{Int}=topological_sort_by_dfs(model.BN.dag); missing_value::Int=-1)
+    #=
+    Run through nodes in topological order, building the instantiation vector as we go
+    We use nodes we already know to condition on the distribution for nodes we do not
+    Modifies assignment to include newly sampled symbols
+    Only sample values set to missing_value
+    =#
+
+    for node in model.BN.nodes[ordering]
+
+        name = node.name
+
+        if get(assignment, name, missing_value) == missing_value
+
+            cpd = BayesNets.cpd(model.BN, name)
+
+            p = BayesNets.probvec(cpd, assignment)
+            r = rand()
+            i = 1
+            p_tot = 0.0
+            while p_tot + p[i] < r && i < length(p)
+                p_tot += p[i]
+                i += 1
+            end
+            assignment[name] = cpd.domain[i]
+        end
     end
 
     assignment

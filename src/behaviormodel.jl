@@ -90,7 +90,7 @@ type DynamicBayesianNetworkBehavior <: AbstractVehicleBehavior
         retval.temp_binprobs_lat = deepcopy(retval.binprobs_lat)
         retval.temp_binprobs_lon = deepcopy(retval.binprobs_lon)
 
-        if isa(f_lat, FeaturesNew.Feature_FutureAcceleration)
+        if isa(f_lat, FeaturesNew.AbstractFeature)
             x = Array(Float64, length(retval.indicators))
             retval.extractor = FeaturesNew.FeatureSubsetExtractor(x, retval.indicators)
 
@@ -157,48 +157,13 @@ function _copy_extracted_into_obs!(behavior::DynamicBayesianNetworkBehavior)
 
     behavior
 end
-
-function select_action(
-    basics::FeatureExtractBasicsPdSet,
-    behavior::DynamicBayesianNetworkBehavior,
-    carind::Int,
-    validfind::Int
-    )
-
-    model = behavior.model
-    symbol_lat = behavior.symbol_lat
-    symbol_lon = behavior.symbol_lon
-
-    simparams_lat = behavior.simparams_lat
-    simparams_lon = behavior.simparams_lon
-    samplemethod_lat = simparams_lat.sampling_scheme
-    samplemethod_lon = simparams_lon.sampling_scheme
-    smoothing_lat = simparams_lat.smoothing
-    smoothing_lon = simparams_lon.smoothing
-    smoothcounts_lat = simparams_lat.smoothing_counts
-    smoothcounts_lon = simparams_lon.smoothing_counts
-
-    bmap_lat = model.discretizers[behavior.ind_lat_in_discretizers]
-    bmap_lon = model.discretizers[behavior.ind_lon_in_discretizers]
-
-    observations = behavior.observations
-    assignment = behavior.assignment
-
-    Features.observe!(observations, basics, carind, validfind, behavior.indicators)
-    encode!(assignment, model, observations)
-    sample!(model, assignment, behavior.ordering)
-
-    bin_lat = assignment[symbol_lat]
-    bin_lon = assignment[symbol_lon]
-
-    behavior.action_clamper.x[1] = decode(bmap_lat, bin_lat, samplemethod_lat)
-    behavior.action_clamper.x[2] = decode(bmap_lon, bin_lon, samplemethod_lon)
+function _set_and_process_action!(behavior::DynamicBayesianNetworkBehavior, action_lat::Float64, action_lon::Float64)
+    behavior.action_clamper.x[1] = action_lat
+    behavior.action_clamper.x[2] = action_lon
     FeaturesNew.process!(behavior.action_clamper)
-    action_lat = behavior.action_clamper.x[1]
-    action_lon = behavior.action_clamper.x[2]
-
-    (action_lat, action_lon)
+    behavior.action_clamper
 end
+
 function select_action(
     behavior::DynamicBayesianNetworkBehavior,
     runlog::RunLog,
@@ -211,16 +176,11 @@ function select_action(
     symbol_lat = behavior.symbol_lat
     symbol_lon = behavior.symbol_lon
     extractor = behavior.extractor
-    # preprocess = behavior.preprocess
 
     simparams_lat = behavior.simparams_lat
     simparams_lon = behavior.simparams_lon
     samplemethod_lat = simparams_lat.sampling_scheme
     samplemethod_lon = simparams_lon.sampling_scheme
-    smoothing_lat = simparams_lat.smoothing
-    smoothing_lon = simparams_lon.smoothing
-    smoothcounts_lat = simparams_lat.smoothing_counts
-    smoothcounts_lon = simparams_lon.smoothing_counts
 
     bmap_lat = model.discretizers[behavior.ind_lat_in_discretizers]
     bmap_lon = model.discretizers[behavior.ind_lon_in_discretizers]
@@ -229,11 +189,13 @@ function select_action(
     assignment = behavior.assignment
 
     FeaturesNew.observe!(extractor, runlog, sn, colset, frame)
-    # FeaturesNew.process!(proprocess) # NOTE (tim): this also modifies extractor.x
     _copy_extracted_into_obs!(behavior)
 
     encode!(assignment, model, observations)
-    sample!(model, assignment, behavior.ordering)
+
+    assignment[symbol_lat] = -1
+    assignment[symbol_lon] = -1
+    sample_unset!(model, assignment, behavior.ordering)
 
     bin_lat = assignment[symbol_lat]
     bin_lon = assignment[symbol_lon]
@@ -247,11 +209,13 @@ function select_action(
     (action_lat, action_lon)
 end
 
-function _calc_action_loglikelihood(
-    behavior::DynamicBayesianNetworkBehavior,
-    action_lat::Float64,
-    action_lon::Float64,
-    )
+
+function _calc_action_loglikelihood(behavior::DynamicBayesianNetworkBehavior)
+
+    #=
+    Actions should be in behavior.action_clamper
+    Observations should be in behavior.observations
+    =#
 
     model = behavior.model
     symbol_lat = behavior.symbol_lat
@@ -259,8 +223,8 @@ function _calc_action_loglikelihood(
     bmap_lat = model.discretizers[behavior.ind_lat_in_discretizers]
     bmap_lon = model.discretizers[behavior.ind_lon_in_discretizers]
 
-    bin_lat = encode(bmap_lat, action_lat)
-    bin_lon = encode(bmap_lon, action_lon)
+    bin_lat = encode(bmap_lat, behavior.action_clamper.x[1])
+    bin_lon = encode(bmap_lon, behavior.action_clamper.x[2])
 
     observations = behavior.observations # assumed to already be populated
     assignment   = behavior.assignment   # this will be overwritten
@@ -270,11 +234,10 @@ function _calc_action_loglikelihood(
 
     encode!(assignment, model, observations)
 
-    # TODO(tim): put this back in; temporarily removed for debugging
     if is_parent(model, symbol_lon, symbol_lat) # lon -> lat
         calc_probability_distribution_over_assignments!(binprobs_lon, model, assignment, symbol_lon)
         fill!(binprobs_lat, 0.0)
-        temp = behavior.temp_binprobs_lon
+        temp = behavior.temp_binprobs_lat
         for (i,p) in enumerate(binprobs_lon)
             assignment[symbol_lon] = i
             calc_probability_distribution_over_assignments!(temp, model, assignment, symbol_lat)
@@ -285,7 +248,7 @@ function _calc_action_loglikelihood(
     elseif is_parent(model, symbol_lat, symbol_lon) # lat -> lon
         calc_probability_distribution_over_assignments!(binprobs_lat, model, assignment, symbol_lat)
         fill!(binprobs_lon, 0.0)
-        temp = behavior.temp_binprobs_lat
+        temp = behavior.temp_binprobs_lon
         for (i,p) in enumerate(binprobs_lat)
             assignment[symbol_lat] = i
             calc_probability_distribution_over_assignments!(temp, model, assignment, symbol_lon)
@@ -308,35 +271,35 @@ function _calc_action_loglikelihood(
 
     log(p_within_bin_lat) + log(p_within_bin_lon)
 end
-function calc_action_loglikelihood(
-    basics::FeatureExtractBasicsPdSet,
-    behavior::DynamicBayesianNetworkBehavior,
-    carind::Int,
-    validfind::Int,
-    action_lat::Float64,
-    action_lon::Float64,
-    )
+# function calc_action_loglikelihood(
+#     basics::FeatureExtractBasicsPdSet,
+#     behavior::DynamicBayesianNetworkBehavior,
+#     carind::Int,
+#     validfind::Int,
+#     action_lat::Float64,
+#     action_lon::Float64,
+#     )
 
-    model = behavior.model
-    symbol_lat = behavior.symbol_lat
-    symbol_lon = behavior.symbol_lon
-    bmap_lat = model.discretizers[indexof(retval.symbol_lat, model)]
-    bmap_lon = model.discretizers[indexof(retval.symbol_lon, model)]
+#     model = behavior.model
+#     symbol_lat = behavior.symbol_lat
+#     symbol_lon = behavior.symbol_lon
+#     bmap_lat = model.discretizers[indexof(retval.symbol_lat, model)]
+#     bmap_lon = model.discretizers[indexof(retval.symbol_lon, model)]
 
-    if min(bmap_lat) ≤ action_lat ≤ max(bmap_lat) &&
-       min(bmap_lon) ≤ action_lon ≤ max(bmap_lon)
+#     if min(bmap_lat) ≤ action_lat ≤ max(bmap_lat) &&
+#        min(bmap_lon) ≤ action_lon ≤ max(bmap_lon)
 
-        Features.observe!(behavior.observations, basics, carind, validfind, behavior.indicators)
+#         Features.observe!(behavior.observations, basics, carind, validfind, behavior.indicators)
 
-        _calc_action_loglikelihood(behavior, action_lat, action_lon)
-    else
-        print_with_color(:red, STDOUT, "\nDynamicBayesianNetworkBehaviors calc_log_prob: HIT\n")
-        print_with_color(:red, STDOUT, "validfind: $validfind\n")
-        print_with_color(:red, STDOUT, "$(min(bmap_lat))  $action_lat $(max(bmap_lat))\n")
-        print_with_color(:red, STDOUT, "$(min(bmap_lon))  $action_lon $(max(bmap_lon))\n")
-        -Inf
-    end
-end
+#         _calc_action_loglikelihood(behavior, action_lat, action_lon)
+#     else
+#         print_with_color(:red, STDOUT, "\nDynamicBayesianNetworkBehaviors calc_log_prob: HIT\n")
+#         print_with_color(:red, STDOUT, "validfind: $validfind\n")
+#         print_with_color(:red, STDOUT, "$(min(bmap_lat))  $action_lat $(max(bmap_lat))\n")
+#         print_with_color(:red, STDOUT, "$(min(bmap_lon))  $action_lon $(max(bmap_lon))\n")
+#         -Inf
+#     end
+# end
 function calc_action_loglikelihood(
     behavior::DynamicBayesianNetworkBehavior,
     runlog::RunLog,
@@ -347,66 +310,24 @@ function calc_action_loglikelihood(
     action_lon::Float64,
     )
 
-    model = behavior.model
-    symbol_lat = behavior.symbol_lat
-    symbol_lon = behavior.symbol_lon
-    bmap_lat = model.discretizers[indexof(symbol_lat, model)]
-    bmap_lon = model.discretizers[indexof(symbol_lat, model)]
+    FeaturesNew.observe!(behavior.extractor, runlog, sn, colset, frame)
+    _copy_extracted_into_obs!(behavior)
+    _set_and_process_action!(behavior, action_lat, action_lon)
 
-    if min(bmap_lat) ≤ action_lat ≤ max(bmap_lat) &&
-       min(bmap_lon) ≤ action_lon ≤ max(bmap_lon)
-
-        # observe the features
-        FeaturesNew.observe!(behavior.extractor, runlog, sn, colset, frame)
-        # FeaturesNew.process!(behavior.proprocess) # NOTE (tim): this also modifies extractor.x
-        _copy_extracted_into_obs!(behavior)
-
-        _calc_action_loglikelihood(behavior, action_lat, action_lon)
-    else
-        print_with_color(:red, STDOUT, "\nDynamicBayesianNetworkBehaviors calc_log_prob: HIT\n")
-        print_with_color(:red, STDOUT, "validfind: $validfind\n")
-        print_with_color(:red, STDOUT, "$(min(bmap_lat))  $action_lat $(max(bmap_lat))\n")
-        print_with_color(:red, STDOUT, "$(min(bmap_lon))  $action_lon $(max(bmap_lon))\n")
-        -Inf
-    end
+    _calc_action_loglikelihood(behavior)
 end
 function calc_action_loglikelihood(
     behavior::DynamicBayesianNetworkBehavior,
     features::DataFrame,
-    frameind::Integer,
+    frame::Integer,
     )
 
-    action_lat = features[frameind, behavior.symbol_lat]::Float64
-    action_lon = features[frameind, behavior.symbol_lon]::Float64
+    action_lat = features[frame, behavior.symbol_lat]::Float64
+    action_lon = features[frame, behavior.symbol_lon]::Float64
 
-    model = behavior.model
-    symbol_lat = behavior.symbol_lat
-    symbol_lon = behavior.symbol_lon
-    bmap_lat = model.discretizers[indexof(symbol_lat, model)]
-    bmap_lon = model.discretizers[indexof(symbol_lat, model)]
+    FeaturesNew.observe!(behavior.extractor, features, frame)
+    _copy_extracted_into_obs!(behavior)
+    _set_and_process_action!(behavior, action_lat, action_lon)
 
-    # action_lat = clamp(action_lat, min(bmap_lat), max(bmap_lat))
-    # action_lon = clamp(action_lon, min(bmap_lon), max(bmap_lon))
-
-    if min(bmap_lat) ≤ action_lat ≤ max(bmap_lat) &&
-       min(bmap_lon) ≤ action_lon ≤ max(bmap_lon)
-
-        if isdefined(behavior, :extractor)
-            frame = frameind
-            FeaturesNew.observe!(behavior.extractor, features, frame)
-            _copy_extracted_into_obs!(behavior)
-        else
-            for name in keys(behavior.observations)
-                behavior.observations[name] = features[frameind, name]
-            end
-        end
-
-        _calc_action_loglikelihood(behavior, action_lat, action_lon)
-    else
-        print_with_color(:red, STDOUT, "\nDynamicBayesianNetworkBehaviors calc_action_loglikelihood: HIT\n")
-        print_with_color(:red, STDOUT, "frameind: $frameind\n")
-        print_with_color(:red, STDOUT, "$(min(bmap_lat))  $action_lat $(max(bmap_lat))\n")
-        print_with_color(:red, STDOUT, "$(min(bmap_lon))  $action_lon $(max(bmap_lon))\n")
-        -Inf
-    end
+    _calc_action_loglikelihood(behavior)
 end

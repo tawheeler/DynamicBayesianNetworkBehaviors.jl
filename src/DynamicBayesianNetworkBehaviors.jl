@@ -68,6 +68,7 @@ export
 
     encode,
     sample!,
+    sample_unset!,
     sample_and_logP!,
     calc_log_probability_of_assignment,
     calc_probability_distribution_over_assignments!,
