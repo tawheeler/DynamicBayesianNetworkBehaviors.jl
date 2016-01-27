@@ -101,4 +101,6 @@ include("default_params.jl")
 include("graph_learning_result.jl")
 include("learning.jl")
 
+include("LinearGaussianBayesianNetBehavior.jl")
+
 end # module

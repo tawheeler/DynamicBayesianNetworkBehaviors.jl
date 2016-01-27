@@ -1,5 +1,10 @@
 using OnlineStats
 
+export
+    LinearGaussianBayesianNetBehavior,
+    LB_TrainParams,
+    LB_PreallocatedData
+
 immutable LinearGaussianStats
     # μ = wᵀx where x[end] = 1
     w::Vector{Float64} # [nparents + 1]
@@ -38,7 +43,7 @@ This is a directly copy from Base.sub2ind but allows for passing a vector instea
 
 Note that this does NOT check bounds
 """
-function sub2ind_vec{T<:Integer}(dims::Tuple{Vararg{Integer}}, I::AbstractVector{T})
+function sub2ind_vec{T<:Integer, S<:Integer}(dims::AbstractVector{T}, I::AbstractVector{S})
     N = length(dims)
     @assert(N == length(I))
 
@@ -68,13 +73,21 @@ function _get_normal(
         j = sub2ind_vec(node.parent_instantiation_counts_disc, node.parental_assignments_disc)
     end
 
+    if j == 0
+        println("PROBLEM!")
+        println("index: ", node.index)
+        println("parental_assignments_disc: ", node.parental_assignments_disc)
+        println("parent_instantiation_counts_disc: ", node.parent_instantiation_counts_disc)
+        sleep(0.25)
+    end
+
     LG_stats = node.stats[j]
 
     for (i,v) in enumerate(node.parents_cont)
         node.parental_assignments_cont[i] = assignment_cont[v]
     end
 
-    μ = dot(LG_stats.A, node.parental_assignments_cont)
+    μ = dot(LG_stats.w, node.parental_assignments_cont)
     normal = Normal(μ, LG_stats.σ)
 end
 
@@ -123,30 +136,29 @@ type LinearGaussianBayesianNetBehavior <: AbstractVehicleBehavior
         retval.node_lat = node_lat
         retval.node_lon = node_lon
         retval.assignment_disc = Array(Int, length(retval.extractor_disc.indicators))
-        retval.assignment_cont = Array(Float64, length(retval.extractor_cont.indicators))
+        retval.assignment_cont = Array(Float64, length(retval.extractor_cont.indicators)+2)
 
         retval
     end
 end
 function Base.print(io::IO, LB::LinearGaussianBayesianNetBehavior)
 
-    var_symbols = [map(f->symbol(f), LB.extractor_disc.indicators);
-                   map(f->symbol(f), LB.extractor_cont.indicators);
-                   symbol(LB.targets.lat); symbol(LB.targets.lon)
-                  ]
+    symbols_disc = map(f->symbol(f), LB.extractor_disc.indicators)
+    symbols_cont = [map(f->symbol(f), LB.extractor_cont.indicators);
+                    symbol(LB.targets.lat); symbol(LB.targets.lon)]
 
     println(io, "Linear Gaussian Bayesian Network Behavior")
     println(io, "\ttargets: ", LB.targets)
     println(io, "\tfeatures: ")
-    println(io, "\t\tdiscrete:   ", map(f->symbol(f), LB.extractor_disc.indicators))
-    println(io, "\t\tcontinuous: ", map(f->symbol(f), LB.extractor_cont.indicators))
+    println(io, "\t\tdiscrete:   ", symbols_disc)
+    println(io, "\t\tcontinuous: ", symbols_cont)
     # println(io, "\t\tNaNable: ", map(f->symbol(f), LB.extractor_nan.indicators))
     println(io, "\tnumber of gaussians for lat: ", length(LB.node_lat.stats))
-    println(io, "\tnumber of gaussians for lon: ", length(LB.node_lat.stats))
-    println(io, "\tparents lat: ", var_symbols[LB.node_lat.parents_disc],
-                                   var_symbols[LB.node_lat.parents_cont])
-    println(io, "\tparents lon: ", var_symbols[LB.node_lon.parents_disc],
-                                   var_symbols[LB.node_lat.parents_cont])
+    println(io, "\tnumber of gaussians for lon: ", length(LB.node_lon.stats))
+    println(io, "\tparents lat: ", symbols_disc[LB.node_lat.parents_disc])
+    println(io, "\t             ", symbols_cont[LB.node_lat.parents_cont])
+    println(io, "\tparents lon: ", symbols_disc[LB.node_lon.parents_disc])
+    println(io, "\t             ", symbols_cont[LB.node_lon.parents_cont])
     println(io, "\tsample lat first: ", LB.sample_lat_first)
 end
 
@@ -198,13 +210,12 @@ type LB_TrainParams <: AbstractVehicleBehaviorTrainParams
 end
 function Base.print(io::IO, p::LB_TrainParams)
     println(io, "LB Train Params")
-    println(io, "\ttargets: ", targets)
-    println(io, "\tindicators: ", map(f->symbol(f), θ.indicators))
-    println(io, "\tridge_regression_constant: ", ridge_regression_constant)
-    println(io, "\tmin_σ_lat:      ", min_σ_lat)
-    println(io, "\tmin_σ_lon:      ", min_σ_lon)
-    println(io, "\tmax_parents:    ", max_parents)
-    println(io, "\tn_PCA_features: ", n_PCA_features)
+    println(io, "\ttargets: ", p.targets)
+    println(io, "\tindicators: ", map(f->symbol(f), p.indicators))
+    println(io, "\tridge_regression_constant: ", p.ridge_regression_constant)
+    println(io, "\tmin_σ_lat:      ", p.min_σ_lat)
+    println(io, "\tmin_σ_lon:      ", p.min_σ_lon)
+    println(io, "\tmax_parents:    ", p.max_parents)
 end
 
 type LB_PreallocatedData <: AbstractVehicleBehaviorPreallocatedData
@@ -219,7 +230,7 @@ type LB_PreallocatedData <: AbstractVehicleBehaviorPreallocatedData
     clamper_cont   :: FeaturesNew.DataClamper
     clamper_act    :: FeaturesNew.DataClamper
 
-    function GMR_PreallocatedData(dset::ModelTrainingData2, params::LB_TrainParams)
+    function LB_PreallocatedData(dset::ModelTrainingData2, params::LB_TrainParams)
 
         retval = new()
 
@@ -235,11 +246,11 @@ type LB_PreallocatedData <: AbstractVehicleBehaviorPreallocatedData
 
         ###########################
 
-        features_disc_index = find(f->isint(f), indicators)
-        features_cont_index = find(f->!isint(f), indicators)
+        features_disc_index = find(f->FeaturesNew.isint(f), indicators)
+        features_cont_index = find(f->!FeaturesNew.isint(f), indicators)
 
         retval.Y = Y
-        retval.X_disc = X[features_disc_index, :]
+        retval.X_disc = round(Int, X[features_disc_index, :]) .+ 1
         retval.X_cont = X[features_cont_index, :]
         retval.features_disc = indicators[features_disc_index]
         retval.features_cont = indicators[features_cont_index]
@@ -261,7 +272,7 @@ end
 
 function _cast_discrete_to_int!(behavior::LinearGaussianBayesianNetBehavior)
     for (i,v) in enumerate(behavior.extractor_disc.x)
-        behavior.assignment_disc = round(Int, v)
+        behavior.assignment_disc[i] = round(Int, v)
     end
     behavior
 end
@@ -270,8 +281,8 @@ function _copy_to_assignment!(behavior::LinearGaussianBayesianNetBehavior)
 
     # temporarily set NaN values to 0.0
     for i in 1:length(behavior.assignment_cont)
-        if isnan(x[i])
-            x[i] = 0.0
+        if isnan(behavior.assignment_cont[i])
+            behavior.assignment_cont[i] = 0.0
         end
     end
 
@@ -279,8 +290,8 @@ function _copy_to_assignment!(behavior::LinearGaussianBayesianNetBehavior)
 end
 function _sample_from_node!(behavior::LinearGaussianBayesianNetBehavior, node::LinearGaussianNode)
     normal = _get_normal(node,
-                         behavior.assignment_cont,
-                         behavior.assignment_disc)
+                         behavior.assignment_disc,
+                         behavior.assignment_cont)
     action_lat = rand(normal)
     behavior.assignment_cont[node.index] = action_lat
 
@@ -300,8 +311,10 @@ function _observe_on_runlog(
     frame::Int
     )
 
-    FeaturesNew.observe!(behavior.extractor_disc, runlog, sn, colset, frame)
     FeaturesNew.observe!(behavior.extractor_cont, runlog, sn, colset, frame)
+    FeaturesNew.observe!(behavior.extractor_disc, runlog, sn, colset, frame)
+    behavior.extractor_disc.x += 1 # compensate for fact that observations start at 0
+
     _process_obs(behavior)
 end
 function _observe_on_dataframe(
@@ -310,16 +323,18 @@ function _observe_on_dataframe(
     frameind::Integer,
     )
 
-    FeaturesNew.observe!(behavior.extractor_disc, features, frameind)
     FeaturesNew.observe!(behavior.extractor_cont, features, frameind)
+    FeaturesNew.observe!(behavior.extractor_disc, features, frameind)
+    behavior.extractor_disc.x += 1 # compensate for fact that observations start at 0
+
     _process_obs(behavior)
 end
 function _set_and_process_action!(behavior::LinearGaussianBayesianNetBehavior, action_lat::Float64, action_lon::Float64)
     behavior.clamper_act.x[1] = action_lat
     behavior.clamper_act.x[2] = action_lon
     FeaturesNew.process!(behavior.clamper_act)
-    behavior.assignment_cont[behavior.node_lat.index] = action_lat
-    behavior.assignment_cont[behavior.node_lon.index] = action_lon
+    behavior.assignment_cont[behavior.node_lat.index] = behavior.clamper_act.x[1]
+    behavior.assignment_cont[behavior.node_lon.index] = behavior.clamper_act.x[2]
     behavior
 end
 
@@ -341,7 +356,7 @@ function select_action(
         behavior.clamper_act.x[1] = _sample_from_node!(behavior, behavior.node_lat)
     end
 
-    process!(behavior.clamper_act) # clamp
+    FeaturesNew.process!(behavior.clamper_act) # clamp
     action_lat = behavior.clamper_act.x[1]
     action_lon = behavior.clamper_act.x[2]
 
@@ -353,11 +368,11 @@ function _calc_action_loglikelihood(behavior::LinearGaussianBayesianNetBehavior)
     # NOTE: observation and setting action must have already occured
 
     logl = 0.0
-    normal = _get_normal(behavior.node_lat, behavior.assignment_cont, behavior.assignment_disc)
-    logl += logpdf(normal, behavior.clamper_act[1])
+    normal = _get_normal(behavior.node_lat, behavior.assignment_disc, behavior.assignment_cont)
+    logl += logpdf(normal, behavior.clamper_act.x[1])
 
-    normal = _get_normal(behavior.node_lon, behavior.assignment_cont, behavior.assignment_disc)
-    logl += logpdf(normal, behavior.clamper_act[2])
+    normal = _get_normal(behavior.node_lon, behavior.assignment_disc, behavior.assignment_cont)
+    logl += logpdf(normal, behavior.clamper_act.x[2])
 
     logl
 end
@@ -385,7 +400,7 @@ function calc_action_loglikelihood(
     action_lat = features[frameind, symbol(behavior.targets.lat)]::Float64
     action_lon = features[frameind, symbol(behavior.targets.lon)]::Float64
 
-    _observe_on_runlog(behavior, features, frameind)
+    _observe_on_dataframe(behavior, features, frameind)
     _set_and_process_action!(behavior, action_lat, action_lon)
     _calc_action_loglikelihood(behavior)
 end
@@ -396,28 +411,55 @@ end
 #
 #
 
-type NodeInTraining
+immutable NodeInTraining
     index::Int # index of this node in Y
-    parents_disc::Vector{Int} # index, in X_disc, of discrete parents
-    parents_cont::Vector{Int} # index, in X_cont, of continuous parents, may include other nodes's vars
     target_as_parent::Int # if != 0, index of other target in Y
+    parents_disc::Vector{Int} # index, in X_disc, of discrete parents (always in sorted order)
+    parents_cont::Vector{Int} # index, in X_cont, of continuous parents, may include other nodes's vars (always in sorted order)
 
-    NodeInTraining(index::Int) = new(index, Int[], Int[], 0)
+    NodeInTraining(index::Int) = new(index, 0, Int[], Int[])
+    NodeInTraining(i::Int, t_as_p::Int, pdisc::Vector{Int}, pcont::Vector{Int}) = new(i, t_as_p, pdisc, pcont)
+end
+function Base.copy(node::NodeInTraining)
+    NodeInTraining(node.index, node.target_as_parent, copy(node.parents_disc), copy(node.parents_cont))
+end
+function set_new_parent_disc(node::NodeInTraining, parent::Int)
+    parents_disc = sort!(unique(push!(copy(node.parents_disc), parent)))
+    NodeInTraining(node.index, node.target_as_parent, parents_disc, copy(node.parents_cont))
+end
+function set_new_parent_cont(node::NodeInTraining, parent::Int)
+    parents_cont = sort!(unique(push!(copy(node.parents_cont), parent)))
+    NodeInTraining(node.index, node.target_as_parent, copy(node.parents_disc), parents_cont)
+end
+function set_new_parent(node::NodeInTraining, parent::Int, add_discrete::Bool)
+    if add_discrete
+        set_new_parent_disc(node, parent)
+    else
+        set_new_parent_cont(node, parent)
+    end
 end
 function Base.hash(node::NodeInTraining, h::UInt=one(UInt))
     hash(node.index, hash(node.parents_disc, hash(node.parents_cont, hash(node.target_as_parent, h))))
 end
 function Base.(:(==))(A::NodeInTraining, B::NodeInTraining)
-    A.index == B.index &&
+    A.index            == B.index &&
     A.target_as_parent == B.target_as_parent &&
-    A.parents_disc == B.parents_disc &&
-    A.parents_cont == B.parents_cont
+    A.parents_disc     == B.parents_disc &&
+    A.parents_cont     == B.parents_cont
 end
+function Base.show(io::IO, node::NodeInTraining)
+    println("Node In Training:")
+    println("\tindex:            ", node.index)
+    println("\ttarget_as_parent: ", node.target_as_parent)
+    println("\tparents_disc:     ", node.parents_disc)
+    println("\tparents_cont:     ", node.parents_cont)
+end
+nparents_total(node::NodeInTraining) = length(node.parents_disc) + length(node.parents_cont)
 
 function _get_component_score(
     node::NodeInTraining,
     Y::Matrix{Float64},
-    X_disc::Matrix{Float64},
+    X_disc::Matrix{Int},
     X_cont::Matrix{Float64},
     disc_parent_instantiations::Vector{Int},
     λ::Float64,
@@ -436,12 +478,18 @@ function _get_component_score(
     #
     #   which can be added to other components to get the full BIC score
 
-    m = nrow(Y)
-    @assert(nrow(X_disc) == m)
-    @assert(nrow(X_cont) == m)
+    # println("\n\nget component score: ", node)
+    # println("size X_cont: ", size(X_cont))
 
     nparents_disc = length(node.parents_disc)
     nparents_cont = length(node.parents_cont)
+
+    # println("nparents_disc: ", nparents_disc)
+    # println("nparents_cont: ", nparents_cont); sleep(0.1)
+
+    m = size(Y,1)
+    @assert(size(X_disc,1) == m)
+    @assert(size(X_cont,1) == m)
 
     logl = NaN
     dim_node = -1
@@ -456,7 +504,8 @@ function _get_component_score(
             parent_instantiation_counts_disc = Array(Int, nparents_disc)
             n_disc_parent_instantiations = 1
             for (i,p) in enumerate(node.parents_disc)
-                parent_instantiation_counts_disc[i] = disc_parent_instantiations[p]
+                b = disc_parent_instantiations[p]
+                parent_instantiation_counts_disc[i] = b
                 n_disc_parent_instantiations *= disc_parent_instantiations[p]
             end
 
@@ -478,14 +527,14 @@ function _get_component_score(
 
             for i in 1 : m
                 # pull contimuous data
-                y = Y[node.index, i]
-                for (j,p) in enumerate(parents_cont)
-                    x[j] = X_cont[p,i]
+                y = Y[i, node.index]
+                for (j,p) in enumerate(node.parents_cont)
+                    x[j] = X_cont[i,p]
                 end
 
                 # identify which one to update
-                for (j,p) in enumerate(parents_disc)
-                    parental_assignments_disc[j] = X_disc[p,i]
+                for (j,p) in enumerate(node.parents_disc)
+                    parental_assignments_disc[j] = X_disc[i,p]
                 end
                 k = sub2ind_vec(parent_instantiation_counts_disc, parental_assignments_disc)
 
@@ -497,7 +546,7 @@ function _get_component_score(
                 for j in 1 : nparents_cont+1
                     lhs[j] += x[j]*y
 
-                    for q in 1 : nparents_cont
+                    for q in 1 : nparents_cont+1
                         rhs[j,q] += x[j]*x[q]
                     end
                 end
@@ -508,10 +557,14 @@ function _get_component_score(
             w_values = Array(Vector{Float64}, n_disc_parent_instantiations)
             σ_values = Array(Float64, n_disc_parent_instantiations)
             for i in 1 : n_disc_parent_instantiations
-                σ_var = σ_var_arr[i]
-                if nobs(σ_var) > 1
-                    w_values[i] = RHS_arr[k] \ lhs_arr[k]
-                    σ_values[i] = std(σ_var)
+                my_var = σ_var_arr[i]
+                if StatsBase.nobs(my_var) > 1
+                    try
+                        w_values[i] = RHS_arr[i] \ LHS_arr[i]
+                    catch
+                        w_values[i] = zeros(nparents_cont+1)
+                    end
+                    σ_values[i] = std(my_var)
                 else
                     w_values[i] = zeros(nparents_cont+1)
                     σ_values[i] = 0.001 # default standard deviation
@@ -523,14 +576,14 @@ function _get_component_score(
             for i in 1 : m
 
                 # pull continuous data
-                y = Y[node.index, i]
-                for (j,p) in enumerate(parents_cont)
-                    x[j] = X_cont[p,i]
+                y = Y[i, node.index]
+                for (j,p) in enumerate(node.parents_cont)
+                    x[j] = X_cont[i,p]
                 end
 
                 # identify which one to update
-                for (j,p) in enumerate(parents_disc)
-                    parental_assignments_disc[j] = X_disc[p,i]
+                for (j,p) in enumerate(node.parents_disc)
+                    parental_assignments_disc[j] = X_disc[i,p]
                 end
                 k = sub2ind_vec(parent_instantiation_counts_disc, parental_assignments_disc)
 
@@ -543,6 +596,7 @@ function _get_component_score(
 
             dim_node = n_disc_parent_instantiations * (nparents_cont+2) # each parent instantiation has nparents+1 for the mean and 1 for the stdev
         else
+
             # no discrete parents
 
             # solve a single linear regression problem:
@@ -553,7 +607,8 @@ function _get_component_score(
 
             lhs = zeros(Float64, nparents_cont+1)
             rhs = diagm(fill(λ, nparents_cont+1))
-            σ_var = Variance()
+
+            my_var = Variance()
 
             x = Array(Float64, nparents_cont+1)
             x[end] = 1.0
@@ -561,19 +616,19 @@ function _get_component_score(
             for i in 1 : m
 
                 # pull continuous data
-                y = Y[node.index, i]
-                for (j,p) in enumerate(parents_cont)
-                    x[j] = X_cont[p,i]
+                y = Y[i, node.index]
+                for (j,p) in enumerate(node.parents_cont)
+                    x[j] = X_cont[i,p]
                 end
 
                 # update stdev
-                fit!(σ_var, y)
+                fit!(my_var, y)
 
                 # update ridge regression
                 for j in 1 : nparents_cont+1
                     lhs[j] += x[j]*y
 
-                    for q in 1 : nparents_cont
+                    for q in 1 : nparents_cont+1
                         rhs[j,q] += x[j]*x[q]
                     end
                 end
@@ -582,9 +637,15 @@ function _get_component_score(
             # solve ridge regressions
             #  w = (λI + XᵀX)⁻¹ Xᵀy
 
-            @assert(nobs(σ_var) > 1)
-            w = RHS_arr[k] \ lhs_arr[k]
-            σ = std(σ_var)
+            @assert(StatsBase.nobs(my_var) > 1)
+            w, σ = Float64[], NaN
+            try
+                w = rhs \ lhs
+                σ = std(my_var)
+            catch
+                w = zeros(Float64, nparents_cont+1)
+                σ = 0.001
+            end
 
             # compute the log likelihood
             logl = 0.0
@@ -592,9 +653,9 @@ function _get_component_score(
 
 
                 # pull continuous data
-                y = Y[node.index, i]
-                for (j,p) in enumerate(parents_cont)
-                    x[j] = X_cont[p,i]
+                y = Y[i, node.index]
+                for (j,p) in enumerate(node.parents_cont)
+                    x[j] = X_cont[i, p]
                 end
 
                 # calc normal and logl
@@ -625,13 +686,18 @@ function _get_component_score(
 
             for i in 1 : m
 
-                y = Y[node.index, i]
+                y = Y[i, node.index]
 
                 # identify which one to update
-                for (j,p) in enumerate(parents_disc)
-                    parental_assignments_disc[j] = X_disc[p,i]
+                for (j,p) in enumerate(node.parents_disc)
+                    parental_assignments_disc[j] = X_disc[i,p]
                 end
                 k = sub2ind_vec(parent_instantiation_counts_disc, parental_assignments_disc)
+
+                # println("parent_instantiation_counts_disc: ", parent_instantiation_counts_disc)
+                # println("parental_assignments_disc: ", parental_assignments_disc)
+                # println("k: ", k)
+                # sleep(0.01)
 
                 # update online stat
                 fit!(var_arr[k], y)
@@ -640,12 +706,12 @@ function _get_component_score(
             μ_values = Array(Float64, n_disc_parent_instantiations)
             σ_values = Array(Float64, n_disc_parent_instantiations)
             for i in 1 : n_disc_parent_instantiations
-                var = var_arr[i]
-                if nobs(σ_var) > 1
-                    μ_values[i] = mean(var)
-                    σ_values[i] = std(var)
-                elseif nobs(σ_var) > 0
-                    μ_values[i] = mean(var)
+                my_var = var_arr[i]
+                if StatsBase.nobs(my_var) > 1
+                    μ_values[i] = mean(my_var)
+                    σ_values[i] = std(my_var)
+                elseif StatsBase.nobs(my_var) > 0
+                    μ_values[i] = mean(my_var)
                     σ_values[i] = 0.001 # default standard deviation
                 else
                     μ_values[i] = 0.0
@@ -657,11 +723,11 @@ function _get_component_score(
             logl = 0.0
             for i in 1 : m
 
-                y = Y[node.index, i]
+                y = Y[i, node.index]
 
                 # identify which one to update
-                for (j,p) in enumerate(parents_disc)
-                    parental_assignments_disc[j] = X_disc[p,i]
+                for (j,p) in enumerate(node.parents_disc)
+                    parental_assignments_disc[j] = X_disc[i,p]
                 end
                 k = sub2ind_vec(parent_instantiation_counts_disc, parental_assignments_disc)
 
@@ -676,7 +742,7 @@ function _get_component_score(
             # no discrete parents either
 
             var = Variance()
-            fit!(var, Y[node.index, :])
+            fit!(var, Y[:, node.index])
 
             μ = mean(var)
             σ = std(var)
@@ -685,7 +751,7 @@ function _get_component_score(
             # compute the log likelihood
             logl = 0.0
             for i in 1 : m
-                logl += logpdf(normal, Y[node.index, i])
+                logl += logpdf(normal, Y[i, node.index])
             end
 
             dim_node = 2 # 1 for mean and 1 for stdev
@@ -698,7 +764,7 @@ function _get_component_score!(
     score_cache::Dict{NodeInTraining, Float64},
     node::NodeInTraining,
     Y::Matrix{Float64},
-    X_disc::Matrix{Float64},
+    X_disc::Matrix{Int},
     X_cont::Matrix{Float64},
     disc_parent_instantiations::Vector{Int},
     λ::Float64,
@@ -715,31 +781,41 @@ function _greedy_hillclimb_iter_on_node(
     node::NodeInTraining,
     score_cache::Dict{NodeInTraining, Float64},
     Y::Matrix{Float64},
-    X_disc::Matrix{Float64},
+    X_disc::Matrix{Int},
     X_cont::Matrix{Float64},
-    max_parents::Int
+    max_parents::Int,
+    disc_parent_instantiations::Vector{Int},
+    λ::Float64,
+    verbosity::Int
     )
 
-    n_disc =size(X_disc, 1)
-    n_cont =size(X_cont, 1)
+    if verbosity > 0
+        println("_greedy_hillclimb_iter_on_node: ")
+        println(node)
+    end
+
+    n_disc = size(X_disc, 2)
+    n_cont = size(X_cont, 2)
 
     start_score = score_cache[node]
     best_score = start_score
     parent_to_add = -1
     add_discrete = true
 
-    parents_disc_orig = deepcopy(node.parents_disc)
-    parents_cont_orig = deepcopy(node.parents_cont)
-
-    nparents_currently = length(parents_disc_orig) + length(parents_cont_orig)
-    if nparents_currently ≥ max_parents
-        (0.0, parent_to_add, add_discrete)
+    if nparents_total(node) ≥ max_parents
+        if verbosity > 0
+            println("skipping due to max_parents = $max_parents reached")
+        end
+        return (-1.0, parent_to_add, add_discrete)
     end
 
     # try adding discrete edges
     for p in 1 : n_disc
-        node.parents_disc = sort!(unique(push!(deepcopy(parents_disc_orig), p)))
-        new_score = _get_component_score!(score_cache, node, Y, X_disc, X_cont)
+        new_score = _get_component_score!(score_cache, set_new_parent_disc(node, p), Y, X_disc, X_cont, disc_parent_instantiations, λ)
+
+        if verbosity > 0
+            @printf("trying disc %5d  -> logl = %12.6f\n", p, new_score)
+        end
 
         if new_score > best_score
             best_score = new_score
@@ -750,64 +826,49 @@ function _greedy_hillclimb_iter_on_node(
 
     # try adding continuous edges
     for p in 1 : n_cont
-        node.parents_cont = sort!(unique(push!(deepcopy(parents_cont_orig), p)))
-        new_score = _get_component_score!(score_cache, node, Y, X_disc, X_cont)
+        new_score = _get_component_score!(score_cache, set_new_parent_cont(node, p), Y, X_disc, X_cont, disc_parent_instantiations, λ)
+
+        if verbosity > 0
+            @printf("trying cont %5d  -> logl = %12.6f\n", p, new_score)
+        end
 
         if new_score > best_score
             best_score = new_score
             parent_to_add = p
-            add_discrete = true
+            add_discrete = false
         end
     end
-
-    node.parents_disc = parents_disc_orig
-    node.parents_cont = parents_cont_orig
 
     Δscore = best_score - start_score
 
     (Δscore, parent_to_add, add_discrete)
 end
-function _apply_node_change!(
-    node::NodeInTraining,
-    parent_to_add::Int,
-    add_discrete::Bool
-    )
-
-    if add_discrete
-        @assert(!in(node.parents_disc, parent_to_add))
-        sort!(push!(node.parents_disc, parent_to_add))
-    else
-        @assert(!in(node.parents_cont, parent_to_add))
-        sort!(push!(node.parents_cont, parent_to_add))
-    end
-
-    node
-end
 function _build_linear_gaussian_node(
     node::NodeInTraining,
     Y::Matrix{Float64},
-    X_disc::Matrix{Float64},
+    X_disc::Matrix{Int},
     X_cont::Matrix{Float64},
-    ind_old_to_new_disc::Dict{Int, Int}(),
-    ind_old_to_new_cont::Dict{Int, Int}(),
+    ind_new_to_old_disc::Dict{Int, Int},
+    ind_new_to_old_cont::Dict{Int, Int},
     disc_parent_instantiations::Vector{Int},
+    λ::Float64,
     )
 
-    index = length(ind_old_to_new_cont) + node.index
+    index = length(ind_new_to_old_cont) + node.index
 
     parents_disc = Array(Int, length(node.parents_disc))
     for (i,p) in enumerate(node.parents_disc)
-        parents_disc[i] = ind_old_to_new_disc[p]
+        parents_disc[i] = ind_new_to_old_disc[p]
     end
 
     parents_cont = Array(Int, length(node.parents_cont))
     for (i,p) in enumerate(node.parents_cont)
-        parents_cont[i] = ind_old_to_new_cont[p]
+        parents_cont[i] = ind_new_to_old_cont[p]
     end
 
-    m = nrow(Y)
-    @assert(nrow(X_disc) == m)
-    @assert(nrow(X_cont) == m)
+    m = size(Y,1)
+    @assert(size(X_disc,1) == m)
+    @assert(size(X_cont,1) == m)
 
     nparents_disc = length(parents_disc)
     nparents_cont = length(parents_cont)
@@ -846,14 +907,14 @@ function _build_linear_gaussian_node(
 
             for i in 1 : m
                 # pull contimuous data
-                y = Y[node.index, i]
-                for (j,p) in enumerate(parents_cont)
-                    x[j] = X_cont[p,i]
+                y = Y[i, node.index]
+                for (j,p) in enumerate(node.parents_cont)
+                    x[j] = X_cont[i,p]
                 end
 
                 # identify which one to update
-                for (j,p) in enumerate(parents_disc)
-                    parental_assignments_disc[j] = X_disc[p,i]
+                for (j,p) in enumerate(node.parents_disc)
+                    parental_assignments_disc[j] = X_disc[i,p]
                 end
                 k = sub2ind_vec(parent_instantiation_counts_disc, parental_assignments_disc)
 
@@ -865,7 +926,7 @@ function _build_linear_gaussian_node(
                 for j in 1 : nparents_cont+1
                     lhs[j] += x[j]*y
 
-                    for q in 1 : nparents_cont
+                    for q in 1 : nparents_cont+1
                         rhs[j,q] += x[j]*x[q]
                     end
                 end
@@ -877,10 +938,10 @@ function _build_linear_gaussian_node(
             stats = Array(LinearGaussianStats, n_disc_parent_instantiations)
 
             for i in 1 : n_disc_parent_instantiations
-                σ_var = σ_var_arr[i]
-                if nobs(σ_var) > 1
-                    w = RHS_arr[k] \ lhs_arr[k]
-                    σ = std(σ_var)
+                my_var = σ_var_arr[i]
+                if StatsBase.nobs(my_var) > 1
+                    w = rhs \ lhs
+                    σ = std(my_var)
                     stats[i] =  LinearGaussianStats(w, σ)
                 else
                     w = zeros(nparents_cont+1)
@@ -899,7 +960,7 @@ function _build_linear_gaussian_node(
 
             lhs = zeros(Float64, nparents_cont+1)
             rhs = diagm(fill(λ, nparents_cont+1))
-            σ_var = Variance()
+            my_var = Variance()
 
             x = Array(Float64, nparents_cont+1)
             x[end] = 1.0
@@ -907,19 +968,19 @@ function _build_linear_gaussian_node(
             for i in 1 : m
 
                 # pull continuous data
-                y = Y[node.index, i]
-                for (j,p) in enumerate(parents_cont)
-                    x[j] = X_cont[p,i]
+                y = Y[i, node.index]
+                for (j,p) in enumerate(node.parents_cont)
+                    x[j] = X_cont[i,p]
                 end
 
                 # update stdev
-                fit!(σ_var, y)
+                fit!(my_var, y)
 
                 # update ridge regression
                 for j in 1 : nparents_cont+1
                     lhs[j] += x[j]*y
 
-                    for q in 1 : nparents_cont
+                    for q in 1 : nparents_cont+1
                         rhs[j,q] += x[j]*x[q]
                     end
                 end
@@ -928,9 +989,9 @@ function _build_linear_gaussian_node(
             # solve ridge regressions
             #  w = (λI + XᵀX)⁻¹ Xᵀy
 
-            @assert(nobs(σ_var) > 1)
-            w = RHS_arr[k] \ lhs_arr[k]
-            σ = std(σ_var)
+            @assert(StatsBase.nobs(my_var) > 1)
+            w = rhs \ lhs
+            σ = std(my_var)
             stats = LinearGaussianStats[LinearGaussianStats(w, σ)]
         end
     else # no continuous parents (μ is fixed)
@@ -950,11 +1011,11 @@ function _build_linear_gaussian_node(
 
             for i in 1 : m
 
-                y = Y[node.index, i]
+                y = Y[i, node.index]
 
                 # identify which one to update
-                for (j,p) in enumerate(parents_disc)
-                    parental_assignments_disc[j] = X_disc[p,i]
+                for (j,p) in enumerate(node.parents_disc)
+                    parental_assignments_disc[j] = X_disc[i,p]
                 end
                 k = sub2ind_vec(parent_instantiation_counts_disc, parental_assignments_disc)
 
@@ -964,17 +1025,17 @@ function _build_linear_gaussian_node(
 
             stats = Array(LinearGaussianStats, n_disc_parent_instantiations)
             for i in 1 : n_disc_parent_instantiations
-                var = var_arr[i]
-                if nobs(σ_var) > 1
-                    w = Float64[mean(var)]
-                    σ = std(var)
+                my_var = var_arr[i]
+                if StatsBase.nobs(my_var) > 1
+                    w = Float64[mean(my_var)]
+                    σ = std(my_var)
                     stats[i] = LinearGaussianStats(w, σ)
-                elseif nobs(σ_var) > 0
-                    w = Float64[mean(var)]
+                elseif StatsBase.nobs(my_var) > 0
+                    w = Float64[mean(my_var)]
                     σ = 0.001 # default standard deviation
                     stats[i] = LinearGaussianStats(w, σ)
                 else
-                    μ = Float64[0.0]
+                    w = Float64[0.0]
                     σ = 0.001 # default standard deviation
                     stats[i] = LinearGaussianStats(w, σ)
                 end
@@ -983,7 +1044,7 @@ function _build_linear_gaussian_node(
             # no discrete parents either
 
             var = Variance()
-            fit!(var, Y[node.index, :])
+            fit!(var, Y[:, node.index])
 
             w = Float64[mean(var)]
             σ = std(var)
@@ -1008,8 +1069,8 @@ function train(
     )
 
     Y = copy_matrix_fold(preallocated_data.Y, fold, fold_assignment, match_fold)
-    X_disc = copy_matrix_fold(preallocated_data.X_disc, fold, fold_assignment, match_fold)
-    X_cont = copy_matrix_fold(preallocated_data.X_cont, fold, fold_assignment, match_fold)
+    X_disc = copy_matrix_fold(preallocated_data.X_disc, fold, fold_assignment, match_fold)::Matrix{Int}
+    X_cont = copy_matrix_fold(preallocated_data.X_cont, fold, fold_assignment, match_fold)::Matrix{Float64}
 
     @assert(findfirst(v->isnan(v), Y) == 0)
     @assert(findfirst(v->isinf(v), Y) == 0)
@@ -1021,28 +1082,40 @@ function train(
     node_lat = NodeInTraining(1)
     node_lon = NodeInTraining(2)
 
+    λ = params.ridge_regression_constant
+    disc_parent_instantiations = convert(Vector{Int}, map(f->round(Int, FeaturesNew.upperbound(f))+1, preallocated_data.features_disc))
     score_cache = Dict{NodeInTraining, Float64}() # node -> (component_score)
 
-
-    best_logl = _get_component_score!(score_cache, node_lat, Y, X_disc, X_cont) +
-                _get_component_score!(score_cache, node_lon, Y, X_disc, X_cont)
+    best_logl = _get_component_score!(score_cache, node_lat, Y, X_disc, X_cont, disc_parent_instantiations, λ) +
+                _get_component_score!(score_cache, node_lon, Y, X_disc, X_cont, disc_parent_instantiations, λ)
 
     finished = false
     while !finished
 
         Δscore_lat, parent_to_add_lat, add_discrete_lat =
-            _greedy_hillclimb_iter_on_node(node_lat, score_cache, Y, X_disc, X_cont, params.max_parents)
+            _greedy_hillclimb_iter_on_node(node_lat, score_cache, Y, X_disc, X_cont, params.max_parents, disc_parent_instantiations, λ, params.verbosity)
         Δscore_lon, parent_to_add_lon, add_discrete_lon =
-            _greedy_hillclimb_iter_on_node(node_lon, score_cache, Y, X_disc, X_cont, params.max_parents)
+            _greedy_hillclimb_iter_on_node(node_lon, score_cache, Y, X_disc, X_cont, params.max_parents, disc_parent_instantiations, λ, params.verbosity)
 
         if max(Δscore_lat, Δscore_lon) < 0.001
             # no improvement
             finished = true
         else
             if Δscore_lat > Δscore_lon
-                _apply_node_change!(node_lat, parent_to_add_lat, add_discrete_lat)
+
+                node_lat = set_new_parent(node_lat, parent_to_add_lat, add_discrete_lat)
+                @assert(haskey(score_cache, node_lat))
+                if params.verbosity > 0
+                    @printf("adding to lat: %4d   %4s\n", parent_to_add_lat, add_discrete_lat ? "disc" : "cont")
+                    println(node_lat)
+                end
             else
-                _apply_node_change!(node_lon, parent_to_add_lon, add_discrete_lon)
+                node_lon = set_new_parent(node_lon, parent_to_add_lon, add_discrete_lon)
+                @assert(haskey(score_cache, node_lon))
+                if params.verbosity > 0
+                    @printf("adding to lon: %4d   %4s\n", parent_to_add_lon, add_discrete_lat ? "disc" : "cont")
+                    println(node_lon)
+                end
             end
         end
     end
@@ -1051,35 +1124,41 @@ function train(
     # now build the model
 
     ind_old_disc = sort!(unique([node_lat.parents_disc; node_lon.parents_disc]))
-    extractor_disc = FeatureSubsetExtractor(params.indicators[ind_old_disc])
-    ind_old_to_new_disc = Dict{Int,Int}()
+    extractor_disc = FeatureSubsetExtractor(preallocated_data.features_disc[ind_old_disc])
+    ind_new_to_old_disc = Dict{Int,Int}()
     for (o,n) in enumerate(ind_old_disc)
-        ind_old_to_new_disc[o] = n
+        ind_new_to_old_disc[n] = o
     end
 
     ind_old_cont = sort!(unique([node_lat.parents_cont; node_lon.parents_cont]))
-    extractor_cont = FeatureSubsetExtractor(params.indicators[ind_old_cont])
+    extractor_cont = FeatureSubsetExtractor(preallocated_data.features_cont[ind_old_cont])
     clamper_cont = get_clamper_subset(preallocated_data.clamper_cont, ind_old_cont, extractor_cont.x)
-    ind_old_to_new_cont = Dict{Int,Int}()
+    ind_new_to_old_cont = Dict{Int,Int}()
     for (o,n) in enumerate(ind_old_cont)
-        ind_old_to_new_cont[o] = n
+        ind_new_to_old_cont[n] = o
     end
 
 
     model_node_lat = _build_linear_gaussian_node(node_lat, Y, X_disc, X_cont,
-                                                 ind_old_to_new_disc, ind_old_to_new_cont)
+                                                 ind_new_to_old_disc, ind_new_to_old_cont,
+                                                 disc_parent_instantiations, λ)
     model_node_lon = _build_linear_gaussian_node(node_lon, Y, X_disc, X_cont,
-                                                 ind_old_to_new_disc, ind_old_to_new_cont)
+                                                 ind_new_to_old_disc, ind_new_to_old_cont,
+                                                 disc_parent_instantiations, λ)
+
+    if params.verbosity > 0
+        println("final node lat: ")
+        println(model_node_lat)
+        println("")
+        println("final node lon: ")
+        println(model_node_lon)
+    end
 
     sample_lat_first = true # TODO: update this once we can learn targets as parents
-
-
 
     LinearGaussianBayesianNetBehavior(
         params.targets, extractor_disc, extractor_cont,
         clamper_cont, preallocated_data.clamper_act,
         sample_lat_first, model_node_lat, model_node_lon
         )
-end
-
 end

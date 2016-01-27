@@ -17,7 +17,7 @@ type BDeuPrior <: DirichletPrior
     BDeuPrior(x::Float64=1.0) = new(x)
 end
 
-Base.print(io::IO, p::UniformPrior) = Base.print(io, "UniformPrior(%.2f)", p.x)
+Base.print(io::IO, p::UniformPrior) = Base.print(io, "UniformPrior(%.2f)", p.α)
 Base.print(io::IO, p::BDeuPrior) = @printf(io, "BDeuPrior(%.2f)", p.x)
 
 function Base.get{I<:Integer, J<:Integer}(p::UniformPrior,

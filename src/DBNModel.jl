@@ -411,6 +411,11 @@ function encode!(assignment::Dict{Symbol,Int}, model::DBNModel, observations::Di
         if !istarget
             sym = model.BN.nodes[i].name
             val = observations[sym]
+            try
+                encode(model.discretizers[i], val)
+            catch
+                println("failed to encode ", sym, " of value ", val, "  ", model.discretizers[i])
+            end
             assignment[sym] = encode(model.discretizers[i], val)
         end
     end
