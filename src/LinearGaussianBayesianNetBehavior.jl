@@ -96,26 +96,26 @@ function _get_normal(
     end
     q = sub2ind_vec(node.parent_instantiation_counts_nann, node.parental_assignments_nann)
 
-    if q == 0
-        println("PROBLEM!")
-        println("index: ", node.index)
-        println("parental_assignments_nann: ", node.parental_assignments_nann)
-        println("parent_instantiation_counts_nann: ", node.parent_instantiation_counts_nann)
-        sleep(0.25)
-    end
+    # if q == 0
+    #     println("PROBLEM!")
+    #     println("index: ", node.index)
+    #     println("parental_assignments_nann: ", node.parental_assignments_nann)
+    #     println("parent_instantiation_counts_nann: ", node.parent_instantiation_counts_nann)
+    #     sleep(0.25)
+    # end
 
     for (i,v) in enumerate(node.parents_disc)
         node.parental_assignments_disc[i] = assignment_disc[v]
     end
     j = sub2ind_vec(node.parent_instantiation_counts_disc, node.parental_assignments_disc)
 
-    if j == 0
-        println("PROBLEM!")
-        println("index: ", node.index)
-        println("parental_assignments_disc: ", node.parental_assignments_disc)
-        println("parent_instantiation_counts_disc: ", node.parent_instantiation_counts_disc)
-        sleep(0.25)
-    end
+    # if j == 0
+    #     println("PROBLEM!")
+    #     println("index: ", node.index)
+    #     println("parental_assignments_disc: ", node.parental_assignments_disc)
+    #     println("parent_instantiation_counts_disc: ", node.parent_instantiation_counts_disc)
+    #     sleep(0.25)
+    # end
 
     # println("q: ", q)
     # println("j: ", j)
@@ -196,7 +196,11 @@ function Base.print(io::IO, LB::LinearGaussianBayesianNetBehavior)
     symbols_cont = convert(Vector{Symbol},[map(f->symbol(f), LB.extractor_cont.indicators);
                                            symbol(LB.targets.lat); symbol(LB.targets.lon)])
 
-    num_cont = sum(f->!FeaturesNew.couldna(f), LB.extractor_cont.indicators)
+    if !isempty(LB.extractor_cont.indicators)
+        num_cont = sum(f->!FeaturesNew.couldna(f), LB.extractor_cont.indicators)
+    else
+        num_cont = 0
+    end
 
     println(io, "Linear Gaussian Bayesian Network Behavior")
     println(io, "\ttargets: ", LB.targets)
@@ -207,10 +211,10 @@ function Base.print(io::IO, LB::LinearGaussianBayesianNetBehavior)
     println(io, "\tnumber of suffstats for lon: ", n_sufficient_statistics(LB.node_lon))
     println(io, "\tparents lat: ", symbols_disc[LB.node_lat.parents_disc])
     println(io, "\t             ", symbols_cont[LB.node_lat.parents_cont])
-    println(io, "\t             ", symbols_cont[LB.node_lat.parents_nann .+ num_cont])
+    println(io, "\t             ", symbols_cont[LB.node_lat.parents_nann])
     println(io, "\tparents lon: ", symbols_disc[LB.node_lon.parents_disc])
     println(io, "\t             ", symbols_cont[LB.node_lon.parents_cont])
-    println(io, "\t             ", symbols_cont[LB.node_lon.parents_nann .+ num_cont])
+    println(io, "\t             ", symbols_cont[LB.node_lon.parents_nann])
     println(io, "\tsample lat first: ", LB.sample_lat_first)
 end
 
@@ -336,14 +340,14 @@ function _cast_discrete_to_int!(behavior::LinearGaussianBayesianNetBehavior)
 end
 function _copy_to_assignment!(behavior::LinearGaussianBayesianNetBehavior)
 
-    copy!(behavior.assignment_cont, 1, behavior.clamper_cont.x, 1, length(behavior.clamper_cont.x))
+    copy!(behavior.assignment_cont, behavior.clamper_cont.x)
 
-    # temporarily set NaN values to 0.0
-    for i in 1:length(behavior.assignment_cont)
-        if isnan(behavior.assignment_cont[i])
-            behavior.assignment_cont[i] = 0.0
-        end
-    end
+    # # temporarily set NaN values to 0.0
+    # for i in 1:length(behavior.assignment_cont)
+    #     if isnan(behavior.assignment_cont[i])
+    #         behavior.assignment_cont[i] = 0.0
+    #     end
+    # end
 
     behavior
 end
@@ -497,6 +501,10 @@ function set_new_parent_nann(node::NodeInTraining, parent::Int)
     parents_nann = sort!(unique(push!(copy(node.parents_nann), parent)))
     NodeInTraining(node.index, node.target_as_parent, copy(node.parents_disc), copy(node.parents_cont), parents_nann)
 end
+function set_new_parent_targ(node::NodeInTraining, parent::Int)
+    @assert(node.target_as_parent == 0)
+    NodeInTraining(node.index, parent, copy(node.parents_disc), copy(node.parents_cont), copy(node.parents_nann))
+end
 function set_new_parent(node::NodeInTraining, parent::Int, sym::Symbol)
     if sym == :disc
         set_new_parent_disc(node, parent)
@@ -504,6 +512,8 @@ function set_new_parent(node::NodeInTraining, parent::Int, sym::Symbol)
         set_new_parent_cont(node, parent)
     elseif sym == :nann
         set_new_parent_nann(node, parent)
+    elseif sym == :targ
+        set_new_parent_targ(node, parent)
     else
         error("unknown parent set type $sym")
     end
@@ -563,9 +573,10 @@ end
 nsamples(data) = size(data.Y, 1)
 
 function _init_parent_stuff_nann(node::NodeInTraining)
-    nparents_nann = length(node.parents_nann)
+    nparents_nann = length(node.parents_nann) + (node.target_as_parent != 0)
 
     # 1 -> all being nan, 2 -> first being cont, rest all nan, 3 -> 2nd cont, 4->1st 2 cont, etc.
+    # last one is the optional target as parent
     parent_instantiation_counts_nann = fill(2, nparents_nann)
 
     # returns 1 if nparents_nann=0, which is what we want
@@ -602,6 +613,10 @@ function _get_nann_assignment_index!(
     for (j,p) in enumerate(node.parents_nann)
         parental_assignments_nann[j] = isnan(data.X_nann[i,p]) ? 1 : 2 # if NAN, then 1, if continuous, then 2
     end
+    if node.target_as_parent != 0
+        parental_assignments_nann[end] = isnan(data.Y[i,node.target_as_parent]) ? 1 : 2
+    end
+
     sub2ind_vec(parent_instantiation_counts_nann, parental_assignments_nann)
 end
 function _get_disc_assignment_index!(
@@ -627,11 +642,30 @@ function _pull_cont_data!(i::Int, x::Vector{Float64}, node::NodeInTraining, data
         x[j] = data.X_cont[i,p]
     end
     for p in node.parents_nann
-        if !isnan(data.X_nann[i,p])
+        v = data.X_nann[i,p]
+        if !isnan(v)
             j += 1
-            x[j] = data.X_nann[i,p]
+            x[j] = v
         end
     end
+    if node.target_as_parent != 0
+        v = data.Y[i,node.target_as_parent]
+        if !isnan(v)
+            j += 1
+            x[j] = v
+        end
+    end
+
+    if j != length(x)-1
+        println("node")
+        println(node)
+        println("x: ", x)
+        println("j: ", j)
+        println("expected: ", length(x)-1)
+        println("target as parent: ", node.target_as_parent)
+        sleep(0.5)
+    end
+
     @assert(j == length(x)-1)
 
     y
@@ -663,7 +697,7 @@ end
 function _perform_ridge_regression(
     node::NodeInTraining,
     data::TrainingData,
-    λ::Float64,
+    params::LB_TrainParams,
     parent_instantiation_counts_nann::Vector{Int},
     n_nann_parent_instantiations::Int,
     parental_assignments_nann::Vector{Int},
@@ -678,6 +712,9 @@ function _perform_ridge_regression(
     # LHS is the Xᵀy vector [nparents+1]
     # RHS is the λI + XᵀX matrix [nparents+1 × nparents+1]
 
+    λ = params.ridge_regression_constant
+    σ_min = node.index == 1 ? params.min_σ_lat : params.min_σ_lon
+
     nparents_disc = length(node.parents_disc)
     nparents_cont = length(node.parents_cont)
     nparents_nann = length(node.parents_nann)
@@ -690,7 +727,11 @@ function _perform_ridge_regression(
     # dim_node = 0
     for n in 1 : n_nann_parent_instantiations
         n_nann_cont_parents = count_ones(n-1)
-        x_len = n_nann_cont_parents + nparents_cont + 1 # one for the bias value
+
+        x_len = nparents_cont + n_nann_cont_parents + 1 # one for the bias value
+                                                        # note that target_as_parent is already in n_nann_cont_parents
+
+        # x: [cont | nann | target_as_parent | bias]
         x_arr[n] = Array(Float64, x_len)
         x_arr[n][end] = 1.0 # set bias to 1.0
         # dim_node += n_disc_parent_instantiations * (x_len + 1) # one for the standard deviation
@@ -709,30 +750,49 @@ function _perform_ridge_regression(
         y = _pull_cont_data!(i, x, node, data)
         k = _get_disc_assignment_index!(i, node, data, parental_assignments_disc, parent_instantiation_counts_disc)
         _update_ridge_regression!(LHS_arr[q,k], RHS_arr[q,k], x, y)
-        fit!(σ_var_arr[q,k], y)
     end
 
     # solve ridge regressions
     #  w = (λI + XᵀX)⁻¹ Xᵀy
 
     w_arr = Array(Vector{Float64}, n_nann_parent_instantiations, n_disc_parent_instantiations)
-    σ_arr = Array(Float64,         n_nann_parent_instantiations, n_disc_parent_instantiations)
-    for n in 1 : n_nann_parent_instantiations
-        n_nann_cont_parents = count_ones(n-1)
+    for q in 1 : n_nann_parent_instantiations
+        n_nann_cont_parents = count_ones(q-1)
         w_len = n_nann_cont_parents + nparents_cont + 1 # one for the 1.0 value
 
-        for i in 1 : n_disc_parent_instantiations
-            my_var = σ_var_arr[n,i]
-            if StatsBase.nobs(my_var) > 1
-                try
-                    w_arr[n,i] = RHS_arr[n,i] \ LHS_arr[n,i]
-                catch
-                    w_arr[n,i] = zeros(w_len)
-                end
-                σ_arr[n,i] = std(my_var)
+        for k in 1 : n_disc_parent_instantiations
+            try
+                w_arr[q,k] = RHS_arr[q,k] \ LHS_arr[q,k]
+                @assert(findfirst(v->isnan(v), w_arr[q,k]) == 0)
+            catch
+                w_arr[q,k] = zeros(w_len)
+            end
+
+            @assert(findfirst(v->isnan(v), w_arr[q,k]) == 0)
+        end
+    end
+
+    # perform σ fit pass
+    for i in 1 : nsamples(data)
+        q = _get_nann_assignment_index!(i, node, data, parental_assignments_nann, parent_instantiation_counts_nann)
+        x = x_arr[q]
+        y = _pull_cont_data!(i, x, node, data)
+        k = _get_disc_assignment_index!(i, node, data, parental_assignments_disc, parent_instantiation_counts_disc)
+
+        w = w_arr[q, k]
+        y_pred = dot(w, x)
+        fit!(σ_var_arr[q,k], y - y_pred)
+    end
+
+    # back out σ
+    σ_arr = Array(Float64, n_nann_parent_instantiations, n_disc_parent_instantiations)
+    for q in 1 : n_nann_parent_instantiations
+        for k in 1 : n_disc_parent_instantiations
+            σ_var = σ_var_arr[q,k]
+            if StreamStats.nobs(σ_var) > 1
+                σ_arr[q, k] = max(std(σ_var), σ_min)
             else
-                w_arr[n,i] = zeros(w_len)
-                σ_arr[n,i] = 0.001 # default standard deviation
+                σ_arr[q, k] = σ_min
             end
         end
     end
@@ -740,7 +800,7 @@ function _perform_ridge_regression(
     (w_arr, σ_arr, x_arr)
 end
 
-function _get_component_score(node::NodeInTraining, data::TrainingData, λ::Float64)
+function _get_component_score(node::NodeInTraining, data::TrainingData, params::LB_TrainParams)
 
     # Using BIC score
     # see: “Ideal Parent” Structure Learning for Continuous Variable Bayesian Networks
@@ -763,7 +823,7 @@ function _get_component_score(node::NodeInTraining, data::TrainingData, λ::Floa
     parent_instantiation_counts_nann, n_nann_parent_instantiations, parental_assignments_nann = _init_parent_stuff_nann(node)
     parent_instantiation_counts_disc, n_disc_parent_instantiations, parental_assignments_disc = _init_parent_stuff_disc(node, data)
 
-    w_arr, σ_arr, x_arr = _perform_ridge_regression(node, data, λ,
+    w_arr, σ_arr, x_arr = _perform_ridge_regression(node, data, params,
                             parent_instantiation_counts_nann, n_nann_parent_instantiations, parental_assignments_nann,
                             parent_instantiation_counts_disc, n_disc_parent_instantiations, parental_assignments_disc)
 
@@ -784,17 +844,17 @@ function _get_component_score(node::NodeInTraining, data::TrainingData, λ::Floa
 
     logl - log(m)*n_suff_stats/2
 end
-function _get_component_score!(node::NodeInTraining, data::TrainingData, λ::Float64)
+function _get_component_score!(node::NodeInTraining, data::TrainingData, params::LB_TrainParams)
 
     if !haskey(data.score_cache, node)
-        data.score_cache[node] = _get_component_score(node, data, λ)
+        data.score_cache[node] = _get_component_score(node, data, params)
     end
     data.score_cache[node]
 end
 
-function _greedy_hillclimb_iter_on_node(node::NodeInTraining, data::TrainingData, params::LB_TrainParams)
+function _greedy_hillclimb_iter_on_node(node::NodeInTraining, data::TrainingData, params::LB_TrainParams, other_node_target_as_parent::Int)
 
-    if params.verbosity > 0
+    if params.verbosity > 1
         println("_greedy_hillclimb_iter_on_node: ")
         println(node)
     end
@@ -803,10 +863,11 @@ function _greedy_hillclimb_iter_on_node(node::NodeInTraining, data::TrainingData
     best_score = start_score
     parent_to_add = -1
     add_sym = :none
-    λ = params.ridge_regression_constant
+
+    n_indicators_cont = size(data.X_cont, 2)
 
     if nparents_total(node) ≥ params.max_parents
-        if params.verbosity > 0
+        if params.verbosity > 1
             println("skipping due to max_parents = $(params.max_parents) reached")
         end
         return (-1.0, parent_to_add, add_sym)
@@ -814,9 +875,9 @@ function _greedy_hillclimb_iter_on_node(node::NodeInTraining, data::TrainingData
 
     # try adding discrete edges
     for p in 1 : size(data.X_disc, 2)
-        new_score = _get_component_score!(set_new_parent_disc(node, p), data, λ)
+        new_score = _get_component_score!(set_new_parent_disc(node, p), data, params)
 
-        if params.verbosity > 0
+        if params.verbosity > 1
             @printf("trying disc %5d  -> Δscore = %12.6f\n", p, new_score - start_score)
         end
 
@@ -828,10 +889,10 @@ function _greedy_hillclimb_iter_on_node(node::NodeInTraining, data::TrainingData
     end
 
     # try adding continuous edges
-    for p in 1 : size(data.X_cont, 2)
-        new_score = _get_component_score!(set_new_parent_cont(node, p), data, λ)
+    for p in 1 : n_indicators_cont
+        new_score = _get_component_score!(set_new_parent_cont(node, p), data, params)
 
-        if params.verbosity > 0
+        if params.verbosity > 1
             @printf("trying cont %5d  -> Δscore = %12.6f\n", p, new_score - start_score)
         end
 
@@ -844,9 +905,9 @@ function _greedy_hillclimb_iter_on_node(node::NodeInTraining, data::TrainingData
 
     # try adding nannable edges
     for p in 1 : size(data.X_nann, 2)
-        new_score = _get_component_score!(set_new_parent_nann(node, p), data, λ)
+        new_score = _get_component_score!(set_new_parent_nann(node, p), data, params)
 
-        if params.verbosity > 0
+        if params.verbosity > 1
             @printf("trying nann %5d  -> Δscore = %12.6f\n", p, new_score - start_score)
         end
 
@@ -854,6 +915,23 @@ function _greedy_hillclimb_iter_on_node(node::NodeInTraining, data::TrainingData
             best_score = new_score
             parent_to_add = p
             add_sym = :nann
+        end
+    end
+
+    # try adding other targets as parents
+    if node.target_as_parent == 0 && other_node_target_as_parent == 0
+        p = node.index == 1 ? 2 : 1
+
+        new_score = _get_component_score!(set_new_parent_targ(node, p), data, params)
+
+        if params.verbosity > 1
+            @printf("trying targ %5d  -> Δscore = %12.6f\n", p, new_score - start_score)
+        end
+
+        if new_score > best_score
+            best_score = new_score
+            parent_to_add = p
+            add_sym = :targ
         end
     end
 
@@ -889,6 +967,10 @@ function _build_linear_gaussian_node(
     for (i,p) in enumerate(node.parents_nann)
         parents_nann[i] = ind_old_to_new_nann[p] + length(ind_old_to_new_cont)
     end
+    if node.target_as_parent != 0
+        nparents_nann += 1
+        push!(parents_nann, node.target_as_parent+length(ind_old_to_new_cont)+length(ind_old_to_new_nann))
+    end
 
     m = nsamples(data)
     @assert(size(data.X_disc,1) == m)
@@ -901,7 +983,7 @@ function _build_linear_gaussian_node(
     parent_instantiation_counts_nann, n_nann_parent_instantiations, parental_assignments_nann = _init_parent_stuff_nann(node)
     parent_instantiation_counts_disc, n_disc_parent_instantiations, parental_assignments_disc = _init_parent_stuff_disc(node, data)
 
-    w_arr, σ_arr, x_arr = _perform_ridge_regression(node, data, params.ridge_regression_constant,
+    w_arr, σ_arr, x_arr = _perform_ridge_regression(node, data, params,
                             parent_instantiation_counts_nann, n_nann_parent_instantiations, parental_assignments_nann,
                             parent_instantiation_counts_disc, n_disc_parent_instantiations, parental_assignments_disc)
 
@@ -946,17 +1028,16 @@ function train(
     node_lat = NodeInTraining(1)
     node_lon = NodeInTraining(2)
 
-    λ = params.ridge_regression_constant
     data = TrainingData(training_data, preallocated_data, fold, fold_assignment, match_fold)
 
-    best_logl = _get_component_score!(node_lat, data, λ) +
-                _get_component_score!(node_lon, data, λ)
+    _get_component_score!(node_lat, data, params)
+    _get_component_score!(node_lon, data, params)
 
     finished = false
     while !finished
 
-        Δscore_lat, parent_to_add_lat, add_sym_lat = _greedy_hillclimb_iter_on_node(node_lat, data, params)
-        Δscore_lon, parent_to_add_lon, add_sym_lon = _greedy_hillclimb_iter_on_node(node_lon, data, params)
+        Δscore_lat, parent_to_add_lat, add_sym_lat = _greedy_hillclimb_iter_on_node(node_lat, data, params, node_lon.target_as_parent)
+        Δscore_lon, parent_to_add_lon, add_sym_lon = _greedy_hillclimb_iter_on_node(node_lon, data, params, node_lat.target_as_parent)
 
         if max(Δscore_lat, Δscore_lon) < 0.001
             # no improvement
@@ -967,15 +1048,19 @@ function train(
                 node_lat = set_new_parent(node_lat, parent_to_add_lat, add_sym_lat)
                 @assert(haskey(data.score_cache, node_lat))
                 if params.verbosity > 0
+                    println("\n===========================================")
                     @printf("adding to lat: %4d   %4s\n", parent_to_add_lat, string(add_sym_lat))
                     println(node_lat)
+                    println("===========================================\n")
                 end
             else
                 node_lon = set_new_parent(node_lon, parent_to_add_lon, add_sym_lon)
                 @assert(haskey(data.score_cache, node_lon))
                 if params.verbosity > 0
+                    println("\n===========================================")
                     @printf("adding to lon: %4d   %4s\n", parent_to_add_lon, string(add_sym_lon))
                     println(node_lon)
+                    println("===========================================\n")
                 end
             end
         end
@@ -1031,7 +1116,7 @@ function train(
         println(model_node_lon)
     end
 
-    sample_lat_first = true # TODO: update this once we can learn targets as parents
+    sample_lat_first = (node_lon.target_as_parent == 0)
 
     LinearGaussianBayesianNetBehavior(
         params.targets, extractor_disc, extractor_cont,
