@@ -789,7 +789,7 @@ function _perform_ridge_regression(
     for q in 1 : n_nann_parent_instantiations
         for k in 1 : n_disc_parent_instantiations
             σ_var = σ_var_arr[q,k]
-            if StreamStats.nobs(σ_var) > 1
+            if StatsBase.nobs(σ_var) > 1
                 σ_arr[q, k] = max(std(σ_var), σ_min)
             else
                 σ_arr[q, k] = σ_min
