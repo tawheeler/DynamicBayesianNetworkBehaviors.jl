@@ -18,7 +18,6 @@ import AutomotiveDrivingModels:
     select_action,
     calc_action_loglikelihood,
     train,
-    observe,
     _reverse_smoothing_sequential_moving_average,
     is_in_fold
 

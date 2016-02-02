@@ -151,10 +151,10 @@ end
 type LinearGaussianBayesianNetBehavior <: AbstractVehicleBehavior
 
     targets::ModelTargets
-    extractor_disc :: FeaturesNew.FeatureSubsetExtractor
-    extractor_cont :: FeaturesNew.FeatureSubsetExtractor
-    clamper_cont :: FeaturesNew.DataClamper
-    clamper_act :: FeaturesNew.DataClamper
+    extractor_disc :: FeatureSubsetExtractor
+    extractor_cont :: FeatureSubsetExtractor
+    clamper_cont ::DataClamper
+    clamper_act :: DataClamper
 
     sample_lat_first::Bool # used to ensure topological ordering is preserved
     node_lat::ConditionalLinearGaussianNode
@@ -163,12 +163,11 @@ type LinearGaussianBayesianNetBehavior <: AbstractVehicleBehavior
     assignment_cont::Vector{Float64} # [c + 2], preallocated memory, with cont | lat | lon
 
     function LinearGaussianBayesianNetBehavior(
-        targets::ModelTargets{FeaturesNew.AbstractFeature},
-        extractor_disc::FeaturesNew.FeatureSubsetExtractor,
-        extractor_cont::FeaturesNew.FeatureSubsetExtractor,
-        # extractor_nan ::FeaturesNew.FeatureSubsetExtractor,
-        clamper_cont::FeaturesNew.DataClamper,
-        clamper_act::FeaturesNew.DataClamper,
+        targets::ModelTargets,
+        extractor_disc::FeatureSubsetExtractor,
+        extractor_cont::FeatureSubsetExtractor,
+        clamper_cont::DataClamper,
+        clamper_act::DataClamper,
         sample_lat_first::Bool,
         node_lat::ConditionalLinearGaussianNode,
         node_lon::ConditionalLinearGaussianNode,
@@ -197,7 +196,7 @@ function Base.print(io::IO, LB::LinearGaussianBayesianNetBehavior)
                                            symbol(LB.targets.lat); symbol(LB.targets.lon)])
 
     if !isempty(LB.extractor_cont.indicators)
-        num_cont = sum(f->!FeaturesNew.couldna(f), LB.extractor_cont.indicators)
+        num_cont = sum(f->!couldna(f), LB.extractor_cont.indicators)
     else
         num_cont = 0
     end
@@ -221,7 +220,7 @@ end
 type LB_TrainParams <: AbstractVehicleBehaviorTrainParams
 
     targets::ModelTargets
-    indicators::Vector{FeaturesNew.AbstractFeature} # list of all potential indicators
+    indicators::Vector{AbstractFeature} # list of all potential indicators
 
     ridge_regression_constant::Float64
     min_σ_lat::Float64 # minimum standard deviation for lateral target
@@ -231,16 +230,8 @@ type LB_TrainParams <: AbstractVehicleBehaviorTrainParams
     verbosity::Int
 
     function LB_TrainParams(;
-        targets::ModelTargets = ModelTargets{FeaturesNew.AbstractFeature}(FeaturesNew.FUTUREDESIREDANGLE,
-                                                                          FeaturesNew.FUTUREACCELERATION),
-        indicators::Union{Vector{AbstractFeature}, Vector{FeaturesNew.AbstractFeature}} = [
-                            POSFY, YAW, SPEED, DELTA_SPEED_LIMIT, VELFX, VELFY, SCENEVELFX, TURNRATE,
-                            D_CL, D_ML, D_MR, TIMETOCROSSING_LEFT, TIMETOCROSSING_RIGHT,
-                            N_LANE_L, N_LANE_R, HAS_LANE_L, HAS_LANE_R, ACC, ACCFX, ACCFY,
-                            A_REQ_STAYINLANE,
-                            HAS_FRONT, D_X_FRONT, D_Y_FRONT, V_X_FRONT, V_Y_FRONT, TTC_X_FRONT,
-                            A_REQ_FRONT, TIMEGAP_X_FRONT,
-                         ],
+        targets::ModelTargets = ModelTargets(Features.FUTUREDESIREDANGLE, Features.FUTUREACCELERATION),
+        indicators::Vector{AbstractFeature} = AbstractFeature[],
         ridge_regression_constant::Float64=0.001,
         min_σ_lat::Float64=1e-4,
         min_σ_lon::Float64=1e-5,
@@ -281,12 +272,12 @@ type LB_PreallocatedData <: AbstractVehicleBehaviorPreallocatedData
     X_cont::Matrix{Float64} # [c × m]
     X_nann::Matrix{Float64} # [n × m]
 
-    features_disc  :: Vector{FeaturesNew.AbstractFeature}
-    features_cont  :: Vector{FeaturesNew.AbstractFeature}
-    features_nann  :: Vector{FeaturesNew.AbstractFeature}
-    clamper_cont   :: FeaturesNew.DataClamper
-    clamper_nann   :: FeaturesNew.DataClamper
-    clamper_act    :: FeaturesNew.DataClamper
+    features_disc  :: Vector{AbstractFeature}
+    features_cont  :: Vector{AbstractFeature}
+    features_nann  :: Vector{AbstractFeature}
+    clamper_cont   :: DataClamper
+    clamper_nann   :: DataClamper
+    clamper_act    :: DataClamper
 
     function LB_PreallocatedData(dset::ModelTrainingData2, params::LB_TrainParams)
 
@@ -304,9 +295,9 @@ type LB_PreallocatedData <: AbstractVehicleBehaviorPreallocatedData
 
         ###########################
 
-        features_disc_indeces = find(f->FeaturesNew.isint(f), indicators)
-        features_cont_indeces = find(f->!FeaturesNew.isint(f) && !FeaturesNew.couldna(f), indicators)
-        features_nann_indeces = find(f->!FeaturesNew.isint(f) &&  FeaturesNew.couldna(f), indicators)
+        features_disc_indeces = find(f->isint(f), indicators)
+        features_cont_indeces = find(f->!isint(f) && !couldna(f), indicators)
+        features_nann_indeces = find(f->!isint(f) &&  couldna(f), indicators)
 
         retval.Y = Y
         retval.X_disc = round(Int, X[features_disc_indeces, :]) .+ 1
@@ -361,7 +352,7 @@ function _sample_from_node!(behavior::LinearGaussianBayesianNetBehavior, node::C
     action_lat
 end
 function _process_obs(behavior::LinearGaussianBayesianNetBehavior)
-    FeaturesNew.process!(behavior.clamper_cont) # TODO - ensure that clamper_cont is tied to extractor_cont
+    process!(behavior.clamper_cont) # TODO - ensure that clamper_cont is tied to extractor_cont
     _cast_discrete_to_int!(behavior)
     _copy_to_assignment!(behavior)
     behavior
@@ -374,8 +365,8 @@ function _observe_on_runlog(
     frame::Int
     )
 
-    FeaturesNew.observe!(behavior.extractor_cont, runlog, sn, colset, frame)
-    FeaturesNew.observe!(behavior.extractor_disc, runlog, sn, colset, frame)
+    observe!(behavior.extractor_cont, runlog, sn, colset, frame)
+    observe!(behavior.extractor_disc, runlog, sn, colset, frame)
     behavior.extractor_disc.x += 1 # compensate for fact that observations start at 0
 
     _process_obs(behavior)
@@ -386,8 +377,8 @@ function _observe_on_dataframe(
     frameind::Integer,
     )
 
-    FeaturesNew.observe!(behavior.extractor_cont, dataframe, frameind)
-    FeaturesNew.observe!(behavior.extractor_disc, dataframe, frameind)
+    observe!(behavior.extractor_cont, dataframe, frameind)
+    observe!(behavior.extractor_disc, dataframe, frameind)
     behavior.extractor_disc.x += 1 # compensate for fact that observations start at 0
 
     _process_obs(behavior)
@@ -395,7 +386,7 @@ end
 function _set_and_process_action!(behavior::LinearGaussianBayesianNetBehavior, action_lat::Float64, action_lon::Float64)
     behavior.clamper_act.x[1] = action_lat
     behavior.clamper_act.x[2] = action_lon
-    FeaturesNew.process!(behavior.clamper_act)
+    process!(behavior.clamper_act)
     behavior.assignment_cont[behavior.node_lat.index] = behavior.clamper_act.x[1]
     behavior.assignment_cont[behavior.node_lon.index] = behavior.clamper_act.x[2]
     behavior
@@ -419,7 +410,7 @@ function select_action(
         behavior.clamper_act.x[1] = _sample_from_node!(behavior, behavior.node_lat)
     end
 
-    FeaturesNew.process!(behavior.clamper_act) # clamp
+    process!(behavior.clamper_act) # clamp
     action_lat = behavior.clamper_act.x[1]
     action_lon = behavior.clamper_act.x[2]
 
@@ -563,7 +554,7 @@ type TrainingData
         retval.X_cont = copy_matrix_fold(preallocated_data.X_cont, fold, fold_assignment, match_fold)::Matrix{Float64}
         retval.X_nann = copy_matrix_fold(preallocated_data.X_nann, fold, fold_assignment, match_fold)::Matrix{Float64}
 
-        retval.disc_parent_instantiations = convert(Vector{Int}, map(f->round(Int, FeaturesNew.upperbound(f))+1, preallocated_data.features_disc))
+        retval.disc_parent_instantiations = convert(Vector{Int}, map(f->round(Int, upperbound(f))+1, preallocated_data.features_disc))
         retval.score_cache = Dict{NodeInTraining, Float64}()
 
         retval

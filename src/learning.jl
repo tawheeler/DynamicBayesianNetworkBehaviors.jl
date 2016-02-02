@@ -3,12 +3,11 @@ const NLOPT_XTOL_REL = 1e-4
 const BAYESIAN_SCORE_IMPROVEMENT_THRESOLD = 1e-1
 
 type ParentFeatures
-    lat :: Union{Vector{AbstractFeature},Vector{FeaturesNew.AbstractFeature}}
-    lon :: Union{Vector{AbstractFeature},Vector{FeaturesNew.AbstractFeature}}
+    lat :: Vector{AbstractFeature}
+    lon :: Vector{AbstractFeature}
 
     ParentFeatures() = new(AbstractFeature[], AbstractFeature[])
     ParentFeatures(lat::Vector{AbstractFeature}, lon::Vector{AbstractFeature}) = new(lat, lon)
-    ParentFeatures(lat::Vector{FeaturesNew.AbstractFeature}, lon::Vector{FeaturesNew.AbstractFeature}) = new(lat, lon)
 end
 
 immutable ModelParams
@@ -19,7 +18,7 @@ immutable ModelParams
     # static params
     ind_lat::Int
     ind_lon::Int
-    features::Union{Vector{AbstractFeature},Vector{FeaturesNew.AbstractFeature}}
+    features::Vector{AbstractFeature}
     dirichlet_prior::DirichletPrior
 end
 immutable ModelData
@@ -39,7 +38,7 @@ type BN_TrainParams <: AbstractVehicleBehaviorTrainParams
     starting_structure::ParentFeatures
     forced::ParentFeatures
     targets::ModelTargets
-    indicators::Union{Vector{AbstractFeature},Vector{FeaturesNew.AbstractFeature}}
+    indicators::Vector{AbstractFeature}
     discretizerdict::Dict{Symbol, AbstractDiscretizer}
 
     dirichlet_prior::DirichletPrior
@@ -59,9 +58,11 @@ type BN_TrainParams <: AbstractVehicleBehaviorTrainParams
     function BN_TrainParams(;
         starting_structure::ParentFeatures=ParentFeatures(),
         forced::ParentFeatures=ParentFeatures(),
-        targets::ModelTargets = ModelTargets{Features.AbstractFeature}(FUTUREDESIREDANGLE_250MS, FUTUREACCELERATION_250MS),
-        indicators::Union{Vector{AbstractFeature},Vector{FeaturesNew.AbstractFeature}}=copy(DEFAULT_INDICATORS),
+        targets::ModelTargets = ModelTargets(Features.FUTUREDESIREDANGLE, Features.FUTUREACCELERATION),
+        indicators::Vector{AbstractFeature} = AbstractFeature[],
         discretizerdict::Dict{Symbol, AbstractDiscretizer}=deepcopy(DEFAULT_DISCRETIZERS),
+
+
 
         dirichlet_prior::DirichletPrior=UniformPrior(),
 
@@ -77,12 +78,6 @@ type BN_TrainParams <: AbstractVehicleBehaviorTrainParams
         optimize_target_bins::Bool=true,
         optimize_parent_bins::Bool=true,
         )
-
-        if eltype(indicators) <: FeaturesNew.AbstractFeature
-            targets = ModelTargets{FeaturesNew.AbstractFeature}(
-                            FeaturesNew.FUTUREDESIREDANGLE,
-                            FeaturesNew.FUTUREACCELERATION)
-        end
 
         retval = new()
 
@@ -139,24 +134,12 @@ type BN_PreallocatedData <: AbstractVehicleBehaviorPreallocatedData
     It then copies data into it based on the given fold assignment
     =#
 
-    action_clamper::FeaturesNew.DataClamper
+    action_clamper::DataClamper
     continuous::Matrix{Float64} # [nsamples×nfeatures]
     discrete::Matrix{Int}       # [nsamples×nfeatures]
     bincounts::Vector{Int}      # [nfeatures]
     rowcount::Int               # number of populated entries
 
-    function BN_PreallocatedData(dset::ModelTrainingData, params::BN_TrainParams)
-
-        nsamples = nrow(dset.dataframe)
-        nfeatures = length(params.indicators) + 2
-
-        continuous = Array(Float64, nsamples, nfeatures)
-        discrete = Array(Int, nsamples, nfeatures)
-        bincounts = Array(Int, nfeatures)
-        rowcount = 0
-
-        new(continuous, discrete, bincounts, rowcount)
-    end
     function BN_PreallocatedData(dset::ModelTrainingData2, params::BN_TrainParams)
 
         targets = params.targets
@@ -174,8 +157,54 @@ type BN_PreallocatedData <: AbstractVehicleBehaviorPreallocatedData
         Y = Array(Float64, 2, nsamples)
         pull_target_matrix!(Y, dset.dataframe, targets, indicators)
 
+        for f in indicators
+            sym = symbol(f)
+            if !haskey(params.discretizerdict, symbol(f))
+                if couldna(f)
+                    if isint(f)
+                        println("nannable categorical: ", f) # TOUT
+                        params.discretizerdict[sym] = datalineardiscretizer([-0.5, 0.5, 1.5], Int, missing_key=NaN)
+                    else
+                        arr = filter(v->!isnan(v), convert(Vector{Float64}, dset.dataframe[sym]))
+                        if !isempty(arr)
+                            lo, hi = extrema(arr)
+                            params.discretizerdict[sym] = datalineardiscretizer(collect(linspace(lo, hi, 5)), Int, missing_key=NaN)
+                        else
+                            println("all nan: ", f) # TOUT
+                            params.discretizerdict[sym] = datalineardiscretizer([-1.0, 0.0, 1.0], Int, missing_key=NaN)
+                        end
+                    end
+                else
+                    lo, hi = extrema(dset.dataframe[sym])
+                    if isint(f)
+                        loI = round(Int, lo)
+                        hiI = round(Int, hi)
+                        params.discretizerdict[sym] = CategoricalDiscretizer(convert(Vector{Float64}, collect(loI:hiI)), Int)
+                    else
+                        params.discretizerdict[sym] = LinearDiscretizer(collect(linspace(lo, hi, 5)), Int)
+                    end
+                end
+            end
+
+            # already has it
+            disc = params.discretizerdict[sym]
+            if isa(disc, LinearDiscretizer) || isa(disc, HybridDiscretizer)
+                arr = filter(v->!isnan(v), convert(Vector{Float64}, dset.dataframe[sym]))
+                if !isempty(arr)
+                    lo, hi = extrema(arr)
+                    if isa(disc, LinearDiscretizer)
+                        disc.binedges[1] = min(disc.binedges[1], lo - 1e-6)
+                        disc.binedges[end] = max(disc.binedges[end], hi + 1e-6)
+                    else
+                        disc.lin.binedges[1] = min(disc.lin.binedges[1], lo - 1e-6)
+                        disc.lin.binedges[end] = max(disc.lin.binedges[end], hi + 1e-6)
+                    end
+                end
+            end
+        end
+
         retval = new()
-        retval.action_clamper = FeaturesNew.DataClamper(
+        retval.action_clamper = DataClamper(
                 Array(Float64, 2),
                 vec(minimum(Y, 2)),
                 vec(maximum(Y, 2))
@@ -200,16 +229,27 @@ function calc_bincounts(
     binedges::Vector{Float64} # this includes min and max edges
     )
 
-    # println(data_sorted_ascending[1], " ≥ ", binedges[1])
-    # println(data_sorted_ascending[end], " ≤ ", binedges[end])
-    @assert(data_sorted_ascending[1] ≥ binedges[1])
-    @assert(data_sorted_ascending[end] ≤ binedges[end])
+    # if data_sorted_ascending[1] < binedges[1] - 1e-8
+    #     println("data_sorted_ascending[1]: ", data_sorted_ascending[1])
+    #     println("binedges[1]: ", binedges[1])
+    #     println("binedges: ", binedges)
+    # end
+    # println()
+    # println()
+    @assert(data_sorted_ascending[1] ≥ binedges[1] - 1e-6)
+    # if data_sorted_ascending[end] > binedges[end] + 1e-8
+    #     println("data_sorted_ascending[end]: ", data_sorted_ascending[end])
+    #     println("binedges[end]: ", binedges[end])
+    #     println("binedges: ", binedges)
+    # end
+    @assert(data_sorted_ascending[end] ≤ binedges[end] + 1e-6)
+    # @assert(data_sorted_ascending[length(data_sorted_ascending)] ≤ binedges[length(binedges)])
 
     bincounts = zeros(Int, length(binedges)-1)
 
     i = 1
     for x in data_sorted_ascending
-        while x > binedges[i+1]
+        while i < length(bincounts) && x > binedges[i+1]
             i += 1
         end
         bincounts[i] += 1
@@ -305,7 +345,7 @@ function drop_invalid_discretization_rows{D<:AbstractDiscretizer, F<:AbstractFea
             sym = symbol(f)
             value = data[i, sym]::Float64
             dmap = binmaps[sym]
-            if (FeaturesNew.is_feature_na(value) && in(j, target_indeces)) ||
+            if (is_feature_na(value) && in(j, target_indeces)) ||
                !supports_encoding(dmap, value)
 
                 is_valid[i] = false
@@ -368,11 +408,6 @@ function _feature_indeces_in_net(
 end
 
 function get_parent_indeces{F<:AbstractFeature}(parents::ParentFeatures, features::Vector{F})
-    parents_lat = find(f->in(f, parents.lat), features)
-    parents_lon = find(f->in(f, parents.lon), features)
-    (parents_lat, parents_lon)
-end
-function get_parent_indeces{F<:FeaturesNew.AbstractFeature}(parents::ParentFeatures, features::Vector{F})
     parents_lat = find(f->in(f, parents.lat), features)
     parents_lon = find(f->in(f, parents.lon), features)
     (parents_lat, parents_lon)
@@ -1438,7 +1473,7 @@ function train(
     starting_structure = params.starting_structure
     forced = params.forced
     targets = params.targets
-    indicators = (params.indicators)::Vector{FeaturesNew.AbstractFeature}
+    indicators = params.indicators
     action_clamper = preallocated_data.action_clamper
     discretizerdict = params.discretizerdict
 
@@ -1490,12 +1525,12 @@ function train(
                 value = training_data.dataframe[i, sym]::Float64
 
                 if supports_encoding(dmap, value) &&
-                 !(FeaturesNew.is_feature_na(value) && (j == ind_lat || j == ind_lon))
+                 !(is_feature_na(value) && (j == ind_lat || j == ind_lon))
                     preallocated_data.continuous[rowcount, j] = value
                 else
                     if !supports_encoding(dmap, value)
                         println("does not support encoding: ", sym, "  ", value)
-                    elseif FeaturesNew.is_feature_na(value) && (j == ind_lat || j == ind_lon)
+                    elseif is_feature_na(value) && (j == ind_lat || j == ind_lon)
                         println("is na: ", sym, "  ", value)
                     end
 

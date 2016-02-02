@@ -1,10 +1,10 @@
 type GraphLearningResult
     fileroot     :: AbstractString
-    target_lat   :: Union{AbstractFeature, FeaturesNew.AbstractFeature}
-    target_lon   :: Union{AbstractFeature, FeaturesNew.AbstractFeature}
-    parents_lat  :: Union{Vector{AbstractFeature}, Vector{FeaturesNew.AbstractFeature}}
-    parents_lon  :: Union{Vector{AbstractFeature}, Vector{FeaturesNew.AbstractFeature}}
-    features     :: Union{Vector{AbstractFeature}, Vector{FeaturesNew.AbstractFeature}}
+    target_lat   :: AbstractFeature
+    target_lon   :: AbstractFeature
+    parents_lat  :: Vector{AbstractFeature}
+    parents_lon  :: Vector{AbstractFeature}
+    features     :: Vector{AbstractFeature}
 
     adj          :: BitMatrix               # this is of the size of the resulting network (ie, |f_inds|)
     stats        :: Vector{Matrix{Float64}} # NOTE(tim): this does not include prior counts
@@ -12,7 +12,7 @@ type GraphLearningResult
 
     function GraphLearningResult(
         basefolder     :: AbstractString,
-        features       :: Union{Vector{AbstractFeature}, Vector{FeaturesNew.AbstractFeature}},
+        features       :: Vector{AbstractFeature},
         ind_lat        :: Int,
         ind_lon        :: Int,
         parentinds_lat :: Vector{Int}, # indices are given in terms of input features vector

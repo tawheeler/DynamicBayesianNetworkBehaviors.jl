@@ -1,7 +1,7 @@
 immutable DBNModel
     BN            :: BayesNet
     statsvec      :: Vector{Matrix{Float64}} # each matrix is [r×q], nvar_instantiations × nparent_instantiations
-    features      :: Union{Vector{AbstractFeature},Vector{FeaturesNew.AbstractFeature}}
+    features      :: Vector{AbstractFeature}
     discretizers  :: Vector{AbstractDiscretizer}
     istarget      :: BitVector # whether a feature is a target feature
 end
@@ -24,29 +24,7 @@ function dbnmodel{R<:Real, D<:AbstractDiscretizer}(
     indicators::Vector{AbstractFeature}
     )
 
-    features = AbstractFeature[symbol2feature(node.name) for node in BN.nodes]
-    discretizers = AbstractDiscretizer[discretizerdict[node.name] for node in BN.nodes]
-    istarget = falses(length(features))
-    for (i,f) in enumerate(features)
-        if in(f, targets)
-            istarget[i] = true
-        elseif !in(f, indicators)
-            error("Feature not in targets or indicators")
-        end
-    end
-
-    statsvec_float = convert(Vector{Matrix{Float64}}, statsvec)
-    DBNModel(BN, statsvec_float, features, discretizers, istarget)
-end
-function dbnmodel{R<:Real, D<:AbstractDiscretizer}(
-    BN:: BayesNet,
-    statsvec::Vector{Matrix{R}},
-    discretizerdict::Dict{Symbol, D},
-    targets::Vector{FeaturesNew.AbstractFeature},
-    indicators::Vector{FeaturesNew.AbstractFeature}
-    )
-
-    features = FeaturesNew.AbstractFeature[FeaturesNew.symbol2feature(sym) for sym in names(BN)]
+    features = AbstractFeature[symbol2feature(sym) for sym in names(BN)]
     discretizers = AbstractDiscretizer[discretizerdict[sym] for sym in names(BN)]
     istarget = falses(length(features))
     for (i,f) in enumerate(features)
@@ -82,43 +60,11 @@ function dbnmodel{R<:Real, D<:AbstractDiscretizer}(
     DBNModel(BN, statsvec_float, features, discretizers, istarget)
 end
 function dbnmodel{R<:Real, D<:AbstractDiscretizer}(
-    BN::BayesNet,
-    statsvec::Vector{Matrix{R}},
-    discretizers::Vector{D},
-    targets::Vector{FeaturesNew.AbstractFeature},
-    indicators::Vector{FeaturesNew.AbstractFeature},
-    )
-
-    features = FeaturesNew.AbstractFeature[symbol2feature(sym) for sym in names(BN)]
-    istarget = falses(length(features))
-    for (i,f) in enumerate(features)
-        if in(f, targets)
-            istarget[i] = true
-        elseif !in(f, indicators)
-            error("Feature $(symbol(f)) neither in targets nor indicators")
-        end
-    end
-
-    statsvec_float = convert(Vector{Matrix{Float64}}, statsvec)
-    DBNModel(BN, statsvec_float, features, discretizers, istarget)
-end
-function dbnmodel{R<:Real, D<:AbstractDiscretizer}(
     adj::BitMatrix, # adj[i,j] = true means i → j
     statsvec::Vector{Matrix{R}},
     discretizerdict::Dict{Symbol, D},
     targets::Vector{AbstractFeature},
     indicators::Vector{AbstractFeature},
-    )
-
-    BN = build_bn(statsvec, targets, indicators, adj)
-    dbnmodel(BN, statsvec, discretizerdict, targets, indicators)
-end
-function dbnmodel{R<:Real, D<:AbstractDiscretizer}(
-    adj::BitMatrix, # adj[i,j] = true means i → j
-    statsvec::Vector{Matrix{R}},
-    discretizerdict::Dict{Symbol, D},
-    targets::Vector{FeaturesNew.AbstractFeature},
-    indicators::Vector{FeaturesNew.AbstractFeature},
     )
 
     BN = build_bn(statsvec, targets, indicators, adj)
@@ -132,13 +78,8 @@ function dbnmodel(modelstats::Dict{AbstractString, Any})
     stats      = modelstats["statistics"]
     adj        = modelstats["adjacency"] # adj[i,j] = true means i → j
 
-    if eltype(targets) <: AbstractFeature
-        dbnmodel(adj, stats, discretizerdict, convert(Vector{AbstractFeature}, targets),
-                            convert(Vector{AbstractFeature}, indicators))
-    else
-        dbnmodel(adj, stats, discretizerdict, convert(Vector{FeaturesNew.AbstractFeature}, targets),
-                            convert(Vector{FeaturesNew.AbstractFeature}, indicators))
-    end
+    dbnmodel(adj, stats, discretizerdict, convert(Vector{AbstractFeature}, targets),
+                        convert(Vector{AbstractFeature}, indicators))
 end
 function dbnmodel(modelpstats_file::AbstractString)
     emstats = load(modelpstats_file)
@@ -147,8 +88,8 @@ end
 
 function build_bn{R<:Real}(
     statsvec   :: Vector{Matrix{R}},
-    targets    :: Vector{FeaturesNew.AbstractFeature},
-    indicators :: Vector{FeaturesNew.AbstractFeature}, # technically all of the non-target indicators
+    targets    :: Vector{AbstractFeature},
+    indicators :: Vector{AbstractFeature}, # technically all of the non-target indicators
     adj        :: BitMatrix
     )
 
@@ -215,95 +156,82 @@ function build_bn{R<:Real}(
 
     return BN
 end
-function build_bn{R<:Real}(
-    statsvec   :: Vector{Matrix{R}},
-    targets    :: Vector{AbstractFeature},
-    indicators :: Vector{AbstractFeature}, # technically all of the non-target indicators
-    adj        :: BitMatrix
-    )
+# function build_bn{R<:Real}(
+#     statsvec   :: Vector{Matrix{R}},
+#     targets    :: Vector{AbstractFeature},
+#     indicators :: Vector{AbstractFeature}, # technically all of the non-target indicators
+#     adj        :: BitMatrix
+#     )
 
-    @assert(size(adj,1) == size(adj,2)) # is square
+#     @assert(size(adj,1) == size(adj,2)) # is square
 
-    n_targets = length(targets)
-    n_indicators = length(indicators)
+#     n_targets = length(targets)
+#     n_indicators = length(indicators)
 
-    bnnames = Array(Symbol, n_targets + n_indicators)
-    for (i,f) in enumerate(targets)
-        bnnames[i] = symbol(f)
-    end
-    for (i,f) in enumerate(indicators)
-        bnnames[i+n_targets] = symbol(f)
-    end
+#     bnnames = Array(Symbol, n_targets + n_indicators)
+#     for (i,f) in enumerate(targets)
+#         bnnames[i] = symbol(f)
+#     end
+#     for (i,f) in enumerate(indicators)
+#         bnnames[i+n_targets] = symbol(f)
+#     end
 
-    @assert(length(unique(bnnames)) == length(bnnames))
-    n_nodes = length(bnnames)
-    @assert(n_nodes == size(adj, 1) == size(adj, 2))
+#     @assert(length(unique(bnnames)) == length(bnnames))
+#     n_nodes = length(bnnames)
+#     @assert(n_nodes == size(adj, 1) == size(adj, 2))
 
-    BN = BayesNet(bnnames)
+#     BN = BayesNet(bnnames)
 
-    r_arr = Array(Int, n_nodes)
-    for (node,node_sym) in enumerate(bnnames)
-        stats = statsvec[node]
-        r, q = size(stats) # r = num node instantiations, q = num parental instantiations
-        states = collect(1:r)
-        BN.domains[node] = DiscreteDomain(states)
-        r_arr[node] = r
-    end
+#     r_arr = Array(Int, n_nodes)
+#     for (node,node_sym) in enumerate(bnnames)
+#         stats = statsvec[node]
+#         r, q = size(stats) # r = num node instantiations, q = num parental instantiations
+#         states = collect(1:r)
+#         set_domain!(BN, node_sym, DiscreteDomain(states))
+#         r_arr[node] = r
+#     end
 
-    for (node,node_sym) in enumerate(bnnames)
+#     for (node,node_sym) in enumerate(bnnames)
 
-        stats = statsvec[node]
-        r, q = size(stats)
-        states = collect(1:r)
+#         stats = statsvec[node]
+#         r, q = size(stats)
+#         states = collect(1:r)
 
-        stats .+= 1 # NOTE(tim): adding uniform prior
-        probabilities = stats ./ sum(stats,1)
+#         stats .+= 1 # NOTE(tim): adding uniform prior
+#         probabilities = stats ./ sum(stats,1)
 
-        # set any parents & populate probability table
-        n_parents = sum(adj[:,node])
-        if n_parents > 0
-            bnparents = bnnames[adj[:,node]]
-            for pa in bnparents
-                add_edge!(BN, pa, node_sym)
-            end
+#         # set any parents & populate probability table
+#         n_parents = sum(adj[:,node])
+#         if n_parents > 0
+#             bnparents = bnnames[adj[:,node]]
+#             for pa in bnparents
+#                 add_edge!(BN, pa, node_sym)
+#             end
 
-            # populate probability table
-            assignments = BayesNets.assignment_dicts(BN, bnparents)
-            # parameterFunction = BayesNets.discrete_parameter_function(assignments, vec(probabilities), r)
-            # setCPD!(BN, node_sym, CPDs.Discrete(states, parameterFunction))
+#             # populate probability table
+#             assignments = BayesNets.assignment_dicts(BN, bnparents)
+#             # parameterFunction = BayesNets.discrete_parameter_function(assignments, vec(probabilities), r)
+#             # setCPD!(BN, node_sym, CPDs.Discrete(states, parameterFunction))
 
-            parameterlookup = BayesNets.discrete_parameter_dict(assignments, vec(probabilities), r)
-            setCPD!(BN, node_sym, CPDs.DiscreteDictCPD(states, parameterlookup))
-        else
-            # no parents
-            # setCPD!(BN, node_sym, CPDs.Discrete(states, vec(probabilities)))
+#             parameterlookup = BayesNets.discrete_parameter_dict(assignments, vec(probabilities), r)
+#             setCPD!(BN, node_sym, CPDs.DiscreteDictCPD(states, parameterlookup))
+#         else
+#             # no parents
+#             # setCPD!(BN, node_sym, CPDs.Discrete(states, vec(probabilities)))
 
-            setCPD!(BN, node_sym, CPDs.DiscreteStaticCPD(states, vec(probabilities)))
-        end
+#             setCPD!(BN, node_sym, CPDs.DiscreteStaticCPD(states, vec(probabilities)))
+#         end
 
-    end
+#     end
 
-    return BN
-end
+#     return BN
+# end
 
-function is_target_lat(f::AbstractFeature)
-    isa(f, Features.Feature_FutureTurnRate_250ms) ||
-    isa(f, Features.Feature_FutureTurnRate_500ms) ||
-    isa(f, Features.Feature_FutureDesiredAngle_250ms) ||
-    isa(f, Features.Feature_FutureDesiredAngle_500ms)
-end
-is_target_lat(f::FeaturesNew.AbstractFeature) = isa(f, FeaturesNew.Feature_FutureDesiredAngle)
-function is_target_lon(f::AbstractFeature)
-    isa(f, Features.Feature_FutureDesiredSpeed_250ms) ||
-    isa(f, Features.Feature_FutureDesiredSpeed_500ms) ||
-    isa(f, Features.Feature_FutureAcceleration_250ms) ||
-    isa(f, Features.Feature_FutureAcceleration_500ms)
-end
-is_target_lon(f::FeaturesNew.AbstractFeature) = isa(f, FeaturesNew.Feature_FutureAcceleration)
+is_target_lat(f::AbstractFeature) = isa(f, Features.Feature_FutureAcceleration)
+is_target_lon(f::AbstractFeature) = isa(f, Features.Feature_FutureAcceleration)
 
 indexof(f::Symbol, model::DBNModel) = model.BN.name_to_index[f]
 indexof(f::AbstractFeature, model::DBNModel) = model.BN.name_to_index[symbol(f)]
-indexof(f::FeaturesNew.AbstractFeature, model::DBNModel) = model.BN.name_to_index[symbol(f)]
 is_parent(model::DBNModel, parent::Int, child::Int) = in(parent, in_neighbors(model.BN.dag, child))
 is_parent(model::DBNModel, parent::Symbol, child::Symbol) = is_parent(model, model.BN.name_to_index[parent], model.BN.name_to_index[child])
 function parent_indeces(varindex::Int, model::DBNModel)
@@ -320,15 +248,7 @@ function get_target_lat(model::DBNModel, targets::Vector{AbstractFeature}=get_ta
     ind = findfirst(f->is_target_lat(f), targets)
     targets[ind]
 end
-function get_target_lat(model::DBNModel, targets::Vector{FeaturesNew.AbstractFeature}=get_targets(model))
-    ind = findfirst(f->is_target_lat(f), targets)
-    targets[ind]
-end
 function get_target_lon(model::DBNModel, targets::Vector{AbstractFeature}=get_targets(model))
-    ind = findfirst(f->is_target_lon(f), targets)
-    targets[ind]
-end
-function get_target_lon(model::DBNModel, targets::Vector{FeaturesNew.AbstractFeature}=get_targets(model))
     ind = findfirst(f->is_target_lon(f), targets)
     targets[ind]
 end
@@ -339,10 +259,6 @@ function get_indicators_for_target(model::DBNModel, i::Int)
     model.features[indicator_indeces]
 end
 function get_indicators_for_target(model::DBNModel, target::AbstractFeature)
-    i = indexof(target, model)
-    get_indicators_for_target(model, i)
-end
-function get_indicators_for_target(model::DBNModel, target::FeaturesNew.AbstractFeature)
     i = indexof(target, model)
     get_indicators_for_target(model, i)
 end
