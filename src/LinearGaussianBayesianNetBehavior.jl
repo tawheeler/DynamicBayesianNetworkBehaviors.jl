@@ -542,17 +542,15 @@ type TrainingData
     function TrainingData(
         training_data::ModelTrainingData2,
         preallocated_data::LB_PreallocatedData,
-        fold::Int,
-        fold_assignment::FoldAssignment,
-        match_fold::Bool,
+        foldset::FoldSet,
         )
 
         retval = new()
 
-        retval.Y = copy_matrix_fold(preallocated_data.Y, fold, fold_assignment, match_fold)
-        retval.X_disc = copy_matrix_fold(preallocated_data.X_disc, fold, fold_assignment, match_fold)::Matrix{Int}
-        retval.X_cont = copy_matrix_fold(preallocated_data.X_cont, fold, fold_assignment, match_fold)::Matrix{Float64}
-        retval.X_nann = copy_matrix_fold(preallocated_data.X_nann, fold, fold_assignment, match_fold)::Matrix{Float64}
+        retval.Y = copy_matrix_fold(preallocated_data.Y, foldset)
+        retval.X_disc = copy_matrix_fold(preallocated_data.X_disc, foldset)::Matrix{Int}
+        retval.X_cont = copy_matrix_fold(preallocated_data.X_cont, foldset)::Matrix{Float64}
+        retval.X_nann = copy_matrix_fold(preallocated_data.X_nann, foldset)::Matrix{Float64}
 
         retval.disc_parent_instantiations = convert(Vector{Int}, map(f->round(Int, upperbound(f))+1, preallocated_data.features_disc))
         retval.score_cache = Dict{NodeInTraining, Float64}()
@@ -1004,9 +1002,7 @@ function train(
     training_data::ModelTrainingData2,
     preallocated_data::LB_PreallocatedData,
     params::LB_TrainParams,
-    fold::Int,
-    fold_assignment::FoldAssignment,
-    match_fold::Bool,
+    foldset::FoldSet,
     )
 
     @assert(findfirst(v->isnan(v), preallocated_data.Y) == 0)
@@ -1019,7 +1015,7 @@ function train(
     node_lat = NodeInTraining(1)
     node_lon = NodeInTraining(2)
 
-    data = TrainingData(training_data, preallocated_data, fold, fold_assignment, match_fold)
+    data = TrainingData(training_data, preallocated_data, foldset)
 
     _get_component_score!(node_lat, data, params)
     _get_component_score!(node_lon, data, params)

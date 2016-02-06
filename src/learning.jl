@@ -1465,9 +1465,7 @@ function train(
     training_data::ModelTrainingData2,
     preallocated_data::BN_PreallocatedData,
     params::BN_TrainParams,
-    fold::Int,
-    fold_assignment::FoldAssignment,
-    match_fold::Bool,
+    foldset::FoldSet,
     )
 
     starting_structure = params.starting_structure
@@ -1513,30 +1511,26 @@ function train(
     #  - drop invalid discretization rows
     #  - check that everything is within the folds
 
-    @assert(length(fold_assignment.frame_assignment) == nrow(training_data.dataframe))
-
     rowcount = 0
-    for (i,a) in enumerate(fold_assignment.frame_assignment)
-        if is_in_fold(fold, a, match_fold)
-            rowcount += 1
-            for (j,f) in enumerate(features)
-                sym = symbol(f)
-                dmap = discretizerdict[sym]
-                value = training_data.dataframe[i, sym]::Float64
+    for i in foldset
+        rowcount += 1
+        for (j,f) in enumerate(features)
+            sym = symbol(f)
+            dmap = discretizerdict[sym]
+            value = training_data.dataframe[i, sym]::Float64
 
-                if supports_encoding(dmap, value) &&
-                 !(is_feature_na(value) && (j == ind_lat || j == ind_lon))
-                    preallocated_data.continuous[rowcount, j] = value
-                else
-                    if !supports_encoding(dmap, value)
-                        println("does not support encoding: ", sym, "  ", value)
-                    elseif is_feature_na(value) && (j == ind_lat || j == ind_lon)
-                        println("is na: ", sym, "  ", value)
-                    end
-
-                    rowcount -= 1
-                    break
+            if supports_encoding(dmap, value) &&
+             !(is_feature_na(value) && (j == ind_lat || j == ind_lon))
+                preallocated_data.continuous[rowcount, j] = value
+            else
+                if !supports_encoding(dmap, value)
+                    println("does not support encoding: ", sym, "  ", value)
+                elseif is_feature_na(value) && (j == ind_lat || j == ind_lon)
+                    println("is na: ", sym, "  ", value)
                 end
+
+                rowcount -= 1
+                break
             end
         end
     end
