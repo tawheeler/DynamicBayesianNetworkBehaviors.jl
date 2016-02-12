@@ -39,14 +39,10 @@ export
     dbnmodel,
     build_bn,
 
-    is_target_lat,
-    is_target_lon,
-
     indexof,
     is_parent,
     parent_indeces,
 
-    get_targets,
     get_target_lat,
     get_target_lon,
     get_indicators,

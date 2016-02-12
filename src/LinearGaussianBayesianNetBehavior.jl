@@ -216,6 +216,10 @@ function Base.print(io::IO, LB::LinearGaussianBayesianNetBehavior)
     println(io, "\t             ", symbols_cont[LB.node_lon.parents_nann])
     println(io, "\tsample lat first: ", LB.sample_lat_first)
 end
+AutomotiveDrivingModels.get_targets(behavior::LinearGaussianBayesianNetBehavior) = behavior.targets
+function AutomotiveDrivingModels.get_indicators(behavior::LinearGaussianBayesianNetBehavior)
+    retval = unique([behavior.extractor_disc.indicators; behavior.extractor_cont.indicators])
+end
 
 type LB_TrainParams <: AbstractVehicleBehaviorTrainParams
 

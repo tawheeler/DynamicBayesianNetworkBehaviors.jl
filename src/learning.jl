@@ -162,7 +162,7 @@ type BN_PreallocatedData <: AbstractVehicleBehaviorPreallocatedData
             if !haskey(params.discretizerdict, symbol(f))
                 if couldna(f)
                     if isint(f)
-                        println("nannable categorical: ", f) # TOUT
+                        # println("nannable categorical: ", f)
                         params.discretizerdict[sym] = datalineardiscretizer([-0.5, 0.5, 1.5], Int, missing_key=NaN)
                     else
                         arr = filter(v->!isnan(v), convert(Vector{Float64}, dset.dataframe[sym]))
@@ -170,7 +170,7 @@ type BN_PreallocatedData <: AbstractVehicleBehaviorPreallocatedData
                             lo, hi = extrema(arr)
                             params.discretizerdict[sym] = datalineardiscretizer(collect(linspace(lo, hi, 5)), Int, missing_key=NaN)
                         else
-                            println("all nan: ", f) # TOUT
+                            # println("all nan: ", f)
                             params.discretizerdict[sym] = datalineardiscretizer([-1.0, 0.0, 1.0], Int, missing_key=NaN)
                         end
                     end
@@ -810,20 +810,6 @@ function calc_discretize_score(
     count_orig = sum(stats)
     count_new = count_orig + 2*length(stats)
     count_ratio = count_orig / count_new
-    # log_count_ratio = log(count_ratio)
-    # println(log_count_ratio)
-
-    # orig_score = 0.0
-    # for i = 1 : size(stats, 1)
-
-    #     count = 0
-    #     for j = 1 : size(stats, 2)
-    #         count += stats[i,j]
-    #     end
-
-    #     P = get_bin_logprobability(binmap, i)
-    #     orig_score += count*P
-    # end
 
     score = 0.0
     for i = 1 : size(stats, 1)
@@ -837,9 +823,6 @@ function calc_discretize_score(
         P = get_bin_logprobability(binmap, i)
         score += count_modified*count_ratio*P
     end
-
-    # println("orig score: ", orig_score)
-    # println("new  score: ", score)
 
     score
 end
@@ -1490,6 +1473,7 @@ function train(
     ####################
 
     features = [[targets.lat, targets.lon]; indicators]
+    println("targets: ", targets)
 
     # TODO(tim): fix this
     ind_lat = 1
@@ -1729,6 +1713,10 @@ function train(
     res = GraphLearningResult("trained", modelparams.features, modelparams.ind_lat, modelparams.ind_lon,
                               modelparams.parents_lat, modelparams.parents_lon, NaN,
                               preallocated_data.bincounts, preallocated_data.discrete[1:preallocated_data.rowcount,:]')
+
+    println("target_lat: ", res.target_lat)
+    println("target_lon: ", res.target_lon)
+    sleep(0.1)
 
     model = dbnmodel(get_emstats(res, binmapdict))
 

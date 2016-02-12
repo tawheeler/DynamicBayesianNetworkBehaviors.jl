@@ -227,9 +227,6 @@ end
 #     return BN
 # end
 
-is_target_lat(f::AbstractFeature) = isa(f, Features.Feature_FutureAcceleration)
-is_target_lon(f::AbstractFeature) = isa(f, Features.Feature_FutureAcceleration)
-
 indexof(f::Symbol, model::DBNModel) = model.BN.name_to_index[f]
 indexof(f::AbstractFeature, model::DBNModel) = model.BN.name_to_index[symbol(f)]
 is_parent(model::DBNModel, parent::Int, child::Int) = in(parent, in_neighbors(model.BN.dag, child))
@@ -245,15 +242,15 @@ end
 
 get_targets(model::DBNModel) = model.features[model.istarget]
 function get_target_lat(model::DBNModel, targets::Vector{AbstractFeature}=get_targets(model))
-    ind = findfirst(f->is_target_lat(f), targets)
+    ind = findfirst(f->isa(f, FeatureTargetLat), targets)
     targets[ind]
 end
 function get_target_lon(model::DBNModel, targets::Vector{AbstractFeature}=get_targets(model))
-    ind = findfirst(f->is_target_lon(f), targets)
+    ind = findfirst(f->isa(f, FeatureTargetLon), targets)
     targets[ind]
 end
 
-get_indicators(model::DBNModel) = model.features[!model.istarget]
+AutomotiveDrivingModels.get_indicators(model::DBNModel) = model.features[!model.istarget]
 function get_indicators_for_target(model::DBNModel, i::Int)
     indicator_indeces = parent_indeces(i, model)
     model.features[indicator_indeces]

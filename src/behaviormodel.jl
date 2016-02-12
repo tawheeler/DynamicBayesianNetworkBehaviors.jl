@@ -61,6 +61,13 @@ type DynamicBayesianNetworkBehavior <: AbstractVehicleBehavior
         retval.ind_lon = indexof(f_lon, model)
         retval.symbol_lon = symbol(f_lon)
 
+        println("f_lat: ", f_lat)
+        println("f_lon: ", f_lon)
+        println("ind_lat: ", retval.ind_lat)
+        println("ind_lon: ", retval.ind_lon)
+        println("sym_lat: ", retval.symbol_lat)
+        println("sym_lon: ", retval.symbol_lon)
+
 
         retval.simparams_lat = simparams_lat
         retval.simparams_lon = simparams_lon
@@ -113,6 +120,8 @@ function Base.print(io::IO, BN::DynamicBayesianNetworkBehavior)
     println(io, "\tsubset_extractor: ", BN.extractor)
     println(io, "\taction_clamper:   ", BN.action_clamper)
 end
+AutomotiveDrivingModels.get_targets(behavior::DynamicBayesianNetworkBehavior) = ModelTargets(symbol2feature(behavior.symbol_lat), Features.symbol2feature(behavior.symbol_lon))
+AutomotiveDrivingModels.get_indicators(behavior::DynamicBayesianNetworkBehavior) = behavior.extractor.indicators
 
 # function infer_action_lon_from_input_acceleration(sym::Symbol, accel::Float64, simlog::Matrix{Float64}, frameind::Int, logindexbase::Int)
 
