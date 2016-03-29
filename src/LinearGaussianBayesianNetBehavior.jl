@@ -248,6 +248,7 @@ type LB_TrainParams <: AbstractVehicleBehaviorTrainParams
 
         retval = new()
 
+        retval.ridge_regression_constant = ridge_regression_constant
         retval.targets = targets
         retval.indicators = indicators
         retval.min_σ_lat = min_σ_lat

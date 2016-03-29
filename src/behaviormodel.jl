@@ -61,14 +61,6 @@ type DynamicBayesianNetworkBehavior <: AbstractVehicleBehavior
         retval.ind_lon = indexof(f_lon, model)
         retval.symbol_lon = symbol(f_lon)
 
-        println("f_lat: ", f_lat)
-        println("f_lon: ", f_lon)
-        println("ind_lat: ", retval.ind_lat)
-        println("ind_lon: ", retval.ind_lon)
-        println("sym_lat: ", retval.symbol_lat)
-        println("sym_lon: ", retval.symbol_lon)
-
-
         retval.simparams_lat = simparams_lat
         retval.simparams_lon = simparams_lon
 

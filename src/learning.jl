@@ -475,22 +475,6 @@ function bins_actual_to_unit_range!(bin_inner_edges::Vector{Float64}, bin_lo::Fl
     bin_inner_edges
 end
 
-function get_bin_logprobability(binmap::LinearDiscretizer, bin::Int)
-    bin_width = binmap.binedges[bin+1] - binmap.binedges[bin]
-    -log(bin_width)
-end
-function get_bin_logprobability(binmap::CategoricalDiscretizer, bin::Int)
-    # values sampled from a categorical discretizer have no pdf
-    0.0
-end
-function get_bin_logprobability(binmap::HybridDiscretizer, bin::Int)
-    if bin ≤ binmap.disc.lin.nbins
-        get_bin_logprobability(binmap.lin, bin)
-    else
-        get_bin_logprobability(binmap.cat, bin - binmap.lin.nbins)
-    end
-end
-
 function _pre_optimize_categorical_binning(
     data_sorted_ascending::Vector{Float64},
     nbins::Int, # number of bins in resulting discretization
@@ -611,6 +595,9 @@ function _optimize_categorical_binning_nlopt!(binedges::Vector{Float64}, data_so
     # println("before: ", optimization_objective(starting_opt_vector, Int[]))
     maxf, maxx, ret = optimize(opt, starting_opt_vector)
     # println(maxf, "  ", maxx, "  ", ret)
+
+    binedges[end] = max(binedges[end-1]+ε, binedges[end]) # prevent the last bin from begin zero-width
+
     binedges
 end
 function _optimize_categorical_binning(
@@ -699,6 +686,22 @@ function calc_categorical_score(
     end
 
     logl
+end
+
+function get_bin_logprobability(binmap::LinearDiscretizer, bin::Int)
+    bin_width = binwidth(binmap, bin)
+    -log(bin_width)
+end
+function get_bin_logprobability(binmap::CategoricalDiscretizer, bin::Int)
+    # values sampled from a categorical discretizer have no pdf
+    0.0
+end
+function get_bin_logprobability(binmap::HybridDiscretizer, bin::Int)
+    if bin ≤ binmap.disc.lin.nbins
+        get_bin_logprobability(binmap.lin, bin)
+    else
+        get_bin_logprobability(binmap.cat, bin - binmap.lin.nbins)
+    end
 end
 
 function SmileExtra.statistics(
@@ -808,7 +811,7 @@ function calc_discretize_score(
     )
 
     count_orig = sum(stats)
-    count_new = count_orig + 2*length(stats)
+    count_new = count_orig + length(stats)
     count_ratio = count_orig / count_new
 
     score = 0.0
@@ -822,6 +825,26 @@ function calc_discretize_score(
 
         P = get_bin_logprobability(binmap, i)
         score += count_modified*count_ratio*P
+
+        # DEBUG
+        if isinf(score)
+            println("INF!")
+            println("count_modified: ", count_modified)
+            println("count_ratio:    ", count_ratio)
+            println("P:              ", P)
+            println("i:              ", i)
+            println("stats row:      ", stats[i,:])
+            println("binmap:         ", binmap)
+
+            #=
+            count_modified: 2
+            count_ratio:    0.9990615363989811
+            P:              Inf
+            i:              7
+            stats row:      [1]
+            binmap:         Discretizers.LinearDiscretizer{Float64,Int64}([-1.2158632017720226,-1.014890350354545,-0.024183402781830177,-0.010638310390360672,0.01095565287602307,0.025301793977965392,1.5724282305670985,1.5724282305670985],7,Dict(7=>7,4=>4,2=>2,3=>3,5=>5,6=>6,1=>1),Dict(7=>7,4=>4,2=>2,3=>3,5=>5,6=>6,1=>1),true)
+            =#
+        end
     end
 
     score
@@ -1473,7 +1496,6 @@ function train(
     ####################
 
     features = [[targets.lat, targets.lon]; indicators]
-    println("targets: ", targets)
 
     # TODO(tim): fix this
     ind_lat = 1
@@ -1713,10 +1735,6 @@ function train(
     res = GraphLearningResult("trained", modelparams.features, modelparams.ind_lat, modelparams.ind_lon,
                               modelparams.parents_lat, modelparams.parents_lon, NaN,
                               preallocated_data.bincounts, preallocated_data.discrete[1:preallocated_data.rowcount,:]')
-
-    println("target_lat: ", res.target_lat)
-    println("target_lon: ", res.target_lon)
-    sleep(0.1)
 
     model = dbnmodel(get_emstats(res, binmapdict))
 
